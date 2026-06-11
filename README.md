@@ -1,10 +1,8 @@
-# Aggregator Provision
+# Provision Aggregator
 
-Go implementation of a materializing Aggregator Server, developed conformance-first against the aggregator conformance suite.
+Go implementation of a query materializing Aggregator Server, developed conformance-first against the aggregator conformance suite.
 
-## Development
-
-### Dependencies
+## Dependencies
 
 - Go 1.26.1 or newer, matching `go.mod`.
 - Oxigraph CLI, available as `oxigraph` on `PATH`.
@@ -36,6 +34,19 @@ oxigraph --version
 ```
 
 The materializer uses `oxigraph load` to load RDF source documents and `oxigraph query` to write materialized CONSTRUCT or SELECT outputs. Official CLI installation docs are at <https://docs.rs/oxigraph-cli>.
+
+## Running the Server
+
+Add a [aggregator.config.json](aggregator.config.json) file to the current directory.
+An example of such a directory with the contents can be found in [aggregator.config.example.json](aggregator.config.example.json).
+
+Then run the server:
+
+```sh
+go run cmd/aggregator/main.go
+```
+
+## Testing
 
 Run the Go test suite and emit the JSON stream used by the conformance converter:
 
