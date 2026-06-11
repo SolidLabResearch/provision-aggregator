@@ -61,11 +61,12 @@ type upstreamTokenResponse struct {
 }
 
 type umaTokenRequest struct {
-	GrantType        string `json:"grant_type"`
-	Ticket           string `json:"ticket"`
-	Scope            string `json:"scope"`
-	ClaimToken       string `json:"claim_token,omitempty"`
-	ClaimTokenFormat string `json:"claim_token_format,omitempty"`
+	GrantType            string `json:"grant_type"`
+	Ticket               string `json:"ticket"`
+	Scope                string `json:"scope"`
+	ClaimToken           string `json:"claim_token,omitempty"`
+	ClaimTokenFormat     string `json:"claim_token_format,omitempty"`
+	DerivationResourceID string `json:"derivation_resource_id,omitempty"`
 }
 
 func (c Config) requestAccountAccessToken() (string, error) {
@@ -206,29 +207,30 @@ func (c Config) exchangeClientCredentials(tokenEndpoint string, credentials clie
 	return response.AccessToken, nil
 }
 
-func (c Config) requestUMAAccessToken(asURI, ticket, claimToken string) (upstreamTokenResponse, error) {
+func (c Config) requestUMAAccessToken(asURI, ticket, claimToken, derivationResourceID string) (upstreamTokenResponse, error) {
 	tokenEndpoint, err := c.discoverAuthorizationServerTokenEndpoint(asURI)
 	if err != nil {
 		return upstreamTokenResponse{}, err
 	}
-	token, jsonErr := c.requestUMAAccessTokenJSON(tokenEndpoint, ticket, claimToken)
+	token, jsonErr := c.requestUMAAccessTokenJSON(tokenEndpoint, ticket, claimToken, derivationResourceID)
 	if jsonErr == nil {
 		return token, nil
 	}
-	token, formErr := c.requestUMAAccessTokenForm(tokenEndpoint, ticket, claimToken)
+	token, formErr := c.requestUMAAccessTokenForm(tokenEndpoint, ticket, claimToken, derivationResourceID)
 	if formErr == nil {
 		return token, nil
 	}
 	return upstreamTokenResponse{}, fmt.Errorf("UMA token request failed using JSON (%v) and form encoding (%v)", jsonErr, formErr)
 }
 
-func (c Config) requestUMAAccessTokenJSON(tokenEndpoint, ticket, claimToken string) (upstreamTokenResponse, error) {
+func (c Config) requestUMAAccessTokenJSON(tokenEndpoint, ticket, claimToken, derivationResourceID string) (upstreamTokenResponse, error) {
 	body, err := json.Marshal(umaTokenRequest{
-		GrantType:        "urn:ietf:params:oauth:grant-type:uma-ticket",
-		Ticket:           ticket,
-		Scope:            "urn:knows:uma:scopes:derivation-creation",
-		ClaimToken:       claimToken,
-		ClaimTokenFormat: "http://openid.net/specs/openid-connect-core-1_0.html#IDToken",
+		GrantType:            "urn:ietf:params:oauth:grant-type:uma-ticket",
+		Ticket:               ticket,
+		Scope:                "urn:knows:uma:scopes:derivation-creation",
+		ClaimToken:           claimToken,
+		ClaimTokenFormat:     "http://openid.net/specs/openid-connect-core-1_0.html#IDToken",
+		DerivationResourceID: derivationResourceID,
 	})
 	if err != nil {
 		return upstreamTokenResponse{}, err
@@ -252,7 +254,7 @@ func (c Config) requestUMAAccessTokenJSON(tokenEndpoint, ticket, claimToken stri
 	return response, nil
 }
 
-func (c Config) requestUMAAccessTokenForm(tokenEndpoint, ticket, claimToken string) (upstreamTokenResponse, error) {
+func (c Config) requestUMAAccessTokenForm(tokenEndpoint, ticket, claimToken, derivationResourceID string) (upstreamTokenResponse, error) {
 	form := url.Values{}
 	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:uma-ticket")
 	form.Set("ticket", ticket)
@@ -260,6 +262,9 @@ func (c Config) requestUMAAccessTokenForm(tokenEndpoint, ticket, claimToken stri
 	if claimToken != "" {
 		form.Set("claim_token", claimToken)
 		form.Set("claim_token_format", "http://openid.net/specs/openid-connect-core-1_0.html#IDToken")
+	}
+	if derivationResourceID != "" {
+		form.Set("derivation_resource_id", derivationResourceID)
 	}
 	req, err := http.NewRequest(http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -71,6 +72,18 @@ func (c Config) absolute(path string) string {
 		return baseURL
 	}
 	return baseURL + "/" + strings.TrimLeft(path, "/")
+}
+
+func (c Config) routePrefix() string {
+	parsed, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return ""
+	}
+	prefix := "/" + strings.Trim(parsed.EscapedPath(), "/")
+	if prefix == "/" {
+		return ""
+	}
+	return prefix
 }
 
 func (c Config) provisionSubject() string {

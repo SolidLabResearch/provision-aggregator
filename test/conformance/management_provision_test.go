@@ -26,6 +26,27 @@ func TestAGGRINST001(t *testing.T) {
 	}
 }
 
+func TestAggregatorWorksBehindBaseURLPathPrefix(t *testing.T) {
+	server := httpapi.NewServer(httpapi.DefaultConfig("https://example.org/aggregator/"))
+
+	rec := requestWithBearer(server, http.MethodPost, "/aggregator/registration", "application/json", []byte(`{"management_flow":"provision"}`), "valid-management-token")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("prefixed provision status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+	var desc httpapi.AggregatorDescription
+	if err := json.Unmarshal(rec.Body.Bytes(), &desc); err != nil {
+		t.Fatalf("decode aggregator description: %v", err)
+	}
+	if desc.ServiceCollectionEndpoint != "https://example.org/aggregator/aggregators/agg-1/services" {
+		t.Fatalf("service collection endpoint = %q, want prefixed public URL", desc.ServiceCollectionEndpoint)
+	}
+
+	fetched := request(server, http.MethodGet, mustPath(desc.ServiceCollectionEndpoint), "", nil)
+	if fetched.Code != http.StatusOK {
+		t.Fatalf("GET prefixed service collection status = %d, want 200; body: %s", fetched.Code, fetched.Body.String())
+	}
+}
+
 func TestAGGRINST002(t *testing.T) {
 	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
 	desc := provision(t, server)

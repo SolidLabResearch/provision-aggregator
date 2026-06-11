@@ -809,6 +809,84 @@ func TestMilestone7SourceMetadataRecordsHash(t *testing.T) {
 	}
 }
 
+func TestOutputReusesMaterializationWhenSourceETagIsUnchanged(t *testing.T) {
+	sourceBody := []byte(`<https://example.test/source> <https://example.test/p> "first" .`)
+	sourceURL := "https://source.example/source.nt"
+	gets := 0
+	heads := 0
+
+	cfg := httpapi.DefaultConfig("https://aggregator.example")
+	cfg.SourceHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodGet:
+			gets++
+			resp := response(req, http.StatusOK, "application/n-triples", "", sourceBody)
+			resp.Header.Set("ETag", `"v1"`)
+			return resp, nil
+		case http.MethodHead:
+			heads++
+			resp := response(req, http.StatusOK, "application/n-triples", "", nil)
+			resp.Header.Set("ETag", `"v1"`)
+			return resp, nil
+		default:
+			t.Fatalf("source method = %s, want GET or HEAD", req.Method)
+			return nil, nil
+		}
+	})}
+	server := httpapi.NewServer(cfg)
+	agg := provision(t, server)
+	desc := createService(t, server, agg.ServiceCollectionEndpoint, serviceRequestWithSource("SELECT * WHERE { ?s ?p ?o }", sourceURL))
+
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("output status = %d, want 200", rec.Code)
+	}
+	if gets != 1 || heads != 1 {
+		t.Fatalf("source requests GET=%d HEAD=%d, want one initial GET and one freshness HEAD", gets, heads)
+	}
+}
+
+func TestOutputRematerializesWhenSourceETagChanges(t *testing.T) {
+	sourceURL := "https://source.example/source.nt"
+	etag := `"v1"`
+	body := []byte(`<https://example.test/source> <https://example.test/p> "first" .`)
+	gets := 0
+
+	cfg := httpapi.DefaultConfig("https://aggregator.example")
+	cfg.SourceHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodGet:
+			gets++
+			resp := response(req, http.StatusOK, "application/n-triples", "", body)
+			resp.Header.Set("ETag", etag)
+			return resp, nil
+		case http.MethodHead:
+			resp := response(req, http.StatusOK, "application/n-triples", "", nil)
+			resp.Header.Set("ETag", etag)
+			return resp, nil
+		default:
+			t.Fatalf("source method = %s, want GET or HEAD", req.Method)
+			return nil, nil
+		}
+	})}
+	server := httpapi.NewServer(cfg)
+	agg := provision(t, server)
+	desc := createService(t, server, agg.ServiceCollectionEndpoint, serviceRequestWithSource("SELECT * WHERE { ?s ?p ?o }", sourceURL))
+
+	etag = `"v2"`
+	body = []byte(`<https://example.test/source> <https://example.test/p> "second" .`)
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("output status = %d, want 200", rec.Code)
+	}
+	if gets != 2 {
+		t.Fatalf("source GETs = %d, want initial GET and rematerialization GET", gets)
+	}
+	if !strings.Contains(rec.Body.String(), "second") {
+		t.Fatalf("rematerialized output does not include changed source data: %s", rec.Body.String())
+	}
+}
+
 func TestMilestone7FailedUpstreamAuthorizationFailsServiceCreation(t *testing.T) {
 	cfg := httpapi.DefaultConfig("https://aggregator.example")
 	cfg.UpstreamRPT = ""

@@ -35,6 +35,7 @@ type Server struct {
 	services                  map[string]map[string]serviceInstance
 	serviceRevisions          map[string]int
 	outputAssets              map[string]outputAsset
+	upstreamTokens            map[string]cachedUpstreamToken
 	permissions               []PermissionRequestEvidence
 	upstreamAccesses          []UpstreamAccessEvidence
 	upstreamAccessRequests    []UpstreamAccessRequestEvidence
@@ -61,6 +62,7 @@ func NewServer(cfg Config) *Server {
 		services:                 make(map[string]map[string]serviceInstance),
 		serviceRevisions:         make(map[string]int),
 		outputAssets:             make(map[string]outputAsset),
+		upstreamTokens:           make(map[string]cachedUpstreamToken),
 		authorizationResourceIDs: make(map[string]string),
 		now:                      time.Now,
 	}
@@ -169,6 +171,14 @@ type upstreamDerivationEvidence struct {
 	ManagementAccessTokenType string
 }
 
+type cachedUpstreamToken struct {
+	AccessToken          string
+	AuthorizationServer  string
+	Ticket               string
+	DerivationResourceID string
+	Response             upstreamTokenResponse
+}
+
 func (e upstreamDerivationEvidence) hasData() bool {
 	return e.Issuer != "" || e.DerivationResourceID != "" || e.ManagementAccessToken != ""
 }
@@ -207,7 +217,35 @@ func (s *Server) Routes() http.Handler {
 	}))
 	mux.HandleFunc(s.cfg.ManagementEndpointPath, s.handleRegistration)
 	mux.HandleFunc("/aggregators/", s.handleAggregator)
-	return withCORS(mux)
+	return withCORS(s.withRoutePrefix(mux))
+}
+
+func (s *Server) withRoutePrefix(next http.Handler) http.Handler {
+	prefix := s.cfg.routePrefix()
+	if prefix == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == prefix {
+			next.ServeHTTP(w, cloneRequestWithPath(r, "/"))
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, prefix+"/") {
+			next.ServeHTTP(w, cloneRequestWithPath(r, strings.TrimPrefix(r.URL.Path, prefix)))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func cloneRequestWithPath(r *http.Request, path string) *http.Request {
+	cloned := new(http.Request)
+	*cloned = *r
+	urlCopy := *r.URL
+	urlCopy.Path = path
+	urlCopy.RawPath = ""
+	cloned.URL = &urlCopy
+	return cloned
 }
 
 func withCORS(next http.Handler) http.Handler {
@@ -574,47 +612,6 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 		return
 	}
 
-	req := createServiceRequest{
-		Transformation: svc.Transformation,
-		Query:          svc.Query,
-		SourceURLs:     append([]string(nil), svc.SourceURLs...),
-	}
-	output, err := s.materialize(serviceID, req, svc.QueryType)
-	if err != nil {
-		status := http.StatusBadRequest
-		if strings.Contains(err.Error(), "oxigraph") {
-			status = http.StatusInternalServerError
-		}
-		http.Error(w, "rematerialization failed: "+err.Error(), status)
-		return
-	}
-
-	derivation, err := s.updateOutputAssetDerivedFrom(svc.AASResourceID, serviceID, output)
-	status := "ready"
-	errorMessage := ""
-	var derivedFrom []Derivation
-	if err == nil {
-		derivedFrom = []Derivation{derivation}
-	} else {
-		status = "failed"
-		errorMessage = err.Error()
-	}
-
-	s.mu.Lock()
-	if existing, exists := s.services[aggID][serviceID]; exists {
-		existing.SourceMetadata = cloneSourceMetadata(output.Sources)
-		existing.OutputMediaType = output.MediaType
-		existing.OutputPath = output.Path
-		existing.DerivedFrom = cloneDerivations(derivedFrom)
-		existing.UpstreamDerivation = output.UpstreamDerivation
-		existing.Status = status
-		existing.ErrorMessage = errorMessage
-		s.services[aggID][serviceID] = existing
-		s.serviceRevisions[aggID]++
-		svc = existing
-	}
-	s.mu.Unlock()
-
 	validRPT, err := s.outputRPTIsValid(bearerToken(r.Header.Get("Authorization")), svc.AASResourceID)
 	if err != nil {
 		http.Error(w, "RPT validation failed: "+err.Error(), http.StatusBadGateway)
@@ -635,6 +632,53 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`UMA as_uri="%s", ticket="%s"`, s.cfg.authorizationServerURL(), ticket))
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
+	}
+	needsMaterialization, err := s.serviceNeedsMaterialization(svc)
+	if err != nil {
+		http.Error(w, "source validation failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if needsMaterialization {
+		req := createServiceRequest{
+			Transformation: svc.Transformation,
+			Query:          svc.Query,
+			SourceURLs:     append([]string(nil), svc.SourceURLs...),
+		}
+		output, err := s.materialize(serviceID, req, svc.QueryType)
+		if err != nil {
+			status := http.StatusBadRequest
+			if strings.Contains(err.Error(), "oxigraph") {
+				status = http.StatusInternalServerError
+			}
+			http.Error(w, "rematerialization failed: "+err.Error(), status)
+			return
+		}
+
+		derivation, err := s.updateOutputAssetDerivedFrom(svc.AASResourceID, serviceID, output)
+		status := "ready"
+		errorMessage := ""
+		var derivedFrom []Derivation
+		if err == nil {
+			derivedFrom = []Derivation{derivation}
+		} else {
+			status = "failed"
+			errorMessage = err.Error()
+		}
+
+		s.mu.Lock()
+		if existing, exists := s.services[aggID][serviceID]; exists {
+			existing.SourceMetadata = cloneSourceMetadata(output.Sources)
+			existing.OutputMediaType = output.MediaType
+			existing.OutputPath = output.Path
+			existing.DerivedFrom = cloneDerivations(derivedFrom)
+			existing.UpstreamDerivation = output.UpstreamDerivation
+			existing.Status = status
+			existing.ErrorMessage = errorMessage
+			s.services[aggID][serviceID] = existing
+			s.serviceRevisions[aggID]++
+			svc = existing
+		}
+		s.mu.Unlock()
 	}
 	w.Header().Set("Link", "<"+serviceURL(s.cfg, aggID, serviceID)+">; rel=\"aggr:fromService\"")
 	w.Header().Set("Content-Type", svc.OutputMediaType)
@@ -1275,6 +1319,16 @@ type stagedSource struct {
 	UpstreamDerivation upstreamDerivationEvidence
 }
 
+type sourceHTTPResult struct {
+	Body                []byte
+	ContentType         string
+	ETag                string
+	Protected           bool
+	AuthorizationServer string
+	Ticket              string
+	UpstreamDerivation  upstreamDerivationEvidence
+}
+
 func (s *Server) materialize(serviceID string, req createServiceRequest, queryType string) (materializedOutput, error) {
 	workspace := filepath.Join(s.cfg.OxigraphWorkdir, serviceID)
 	storeDir := filepath.Join(workspace, "store")
@@ -1296,10 +1350,12 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 
 	var sources []SourceMetadata
 	var upstreamDerivation upstreamDerivationEvidence
+	var lastSourceErr error
 	for i, sourceURL := range req.SourceURLs {
 		source, err := s.stageSource(stagingDir, i, sourceURL)
 		if err != nil {
 			log.Printf("httpapi: failed to stage source %s: %v", sourceURL, err)
+			lastSourceErr = err
 			continue
 		}
 		sources = append(sources, source.Metadata)
@@ -1333,6 +1389,9 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	}
 
 	if len(sources) == 0 {
+		if lastSourceErr != nil {
+			return materializedOutput{}, lastSourceErr
+		}
 		outputPath := filepath.Join(outputDir, "empty."+resultFormat)
 		if err := os.WriteFile(outputPath, []byte(""), 0o644); err != nil {
 			return materializedOutput{}, err
@@ -1361,11 +1420,11 @@ func (s *Server) stageSource(stagingDir string, index int, rawURL string) (stage
 	}
 	switch parsed.Scheme {
 	case "http", "https":
-		body, contentType, protected, asURI, ticket, upstream, err := s.fetchHTTPSource(rawURL, "")
+		fetched, err := s.fetchHTTPSource(rawURL)
 		if err != nil {
 			return stagedSource{}, err
 		}
-		format := rdfFormatFromContentType(contentType)
+		format := rdfFormatFromContentType(fetched.ContentType)
 		if format == "" {
 			format = rdfFormatFromPath(parsed.Path)
 		}
@@ -1373,17 +1432,18 @@ func (s *Server) stageSource(stagingDir string, index int, rawURL string) (stage
 			return stagedSource{}, fmt.Errorf("source %s is not an RDF document", rawURL)
 		}
 		path := filepath.Join(stagingDir, fmt.Sprintf("source-%d.%s", index, format))
-		if err := os.WriteFile(path, body, 0o644); err != nil {
+		if err := os.WriteFile(path, fetched.Body, 0o644); err != nil {
 			return stagedSource{}, err
 		}
 		return stagedSource{Path: path, Format: format, Metadata: SourceMetadata{
 			URL:                 rawURL,
-			MediaType:           rdfMediaType(format, contentType),
-			SHA256:              sha256Hex(body),
-			Protected:           protected,
-			AuthorizationServer: asURI,
-			PermissionTicket:    ticket,
-		}, UpstreamDerivation: upstream}, nil
+			MediaType:           rdfMediaType(format, fetched.ContentType),
+			SHA256:              sha256Hex(fetched.Body),
+			ETag:                fetched.ETag,
+			Protected:           fetched.Protected,
+			AuthorizationServer: fetched.AuthorizationServer,
+			PermissionTicket:    fetched.Ticket,
+		}, UpstreamDerivation: fetched.UpstreamDerivation}, nil
 	case "file":
 		return stageLocalSource(parsed.Path, rawURL)
 	case "":
@@ -1393,41 +1453,190 @@ func (s *Server) stageSource(stagingDir string, index int, rawURL string) (stage
 	}
 }
 
-func (s *Server) fetchHTTPSource(rawURL, token string) ([]byte, string, bool, string, string, upstreamDerivationEvidence, error) {
-	body, contentType, challenge, statusCode, err := s.requestHTTPSource(rawURL, token)
+func (s *Server) fetchHTTPSource(rawURL string) (sourceHTTPResult, error) {
+	resp, err := s.requestHTTPSource(http.MethodGet, rawURL, "")
 	if err != nil {
-		return nil, "", false, "", "", upstreamDerivationEvidence{}, err
+		return sourceHTTPResult{}, err
 	}
-	if statusCode >= 200 && statusCode <= 299 {
-		return body, contentType, token != "", "", "", upstreamDerivationEvidence{}, nil
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+		return sourceHTTPResult{Body: resp.Body, ContentType: resp.ContentType, ETag: resp.ETag}, nil
 	}
-	if statusCode != http.StatusUnauthorized {
-		return nil, "", false, "", "", upstreamDerivationEvidence{}, fmt.Errorf("source %s returned %d", rawURL, statusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		return sourceHTTPResult{}, fmt.Errorf("source %s returned %d", rawURL, resp.StatusCode)
 	}
-	asURI, ticket, ok := parseUMAChallenge(challenge)
+	asURI, ticket, ok := parseUMAChallenge(resp.Challenge)
 	if !ok {
-		return nil, "", false, "", "", upstreamDerivationEvidence{}, fmt.Errorf("source %s returned 401 without UMA challenge", rawURL)
+		return sourceHTTPResult{}, fmt.Errorf("source %s returned 401 without UMA challenge", rawURL)
 	}
-	upstreamToken, upstreamResponse, err := s.obtainUpstreamRPT(rawURL, asURI, ticket)
+	upstreamToken := s.cachedUpstreamToken(rawURL, asURI)
+	var upstreamResponse upstreamTokenResponse
+	if upstreamToken != "" {
+		resp, err = s.requestHTTPSource(http.MethodGet, rawURL, upstreamToken)
+		if err != nil {
+			return sourceHTTPResult{}, err
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+			return sourceHTTPResult{
+				Body:                resp.Body,
+				ContentType:         resp.ContentType,
+				ETag:                resp.ETag,
+				Protected:           true,
+				AuthorizationServer: asURI,
+				Ticket:              ticket,
+				UpstreamDerivation:  upstreamDerivationEvidenceFrom(asURI, s.cachedUpstreamTokenResponse(rawURL, asURI)),
+			}, nil
+		}
+	}
+	upstreamToken, upstreamResponse, err = s.obtainUpstreamRPT(rawURL, asURI, ticket)
 	if err != nil {
-		return nil, "", false, "", "", upstreamDerivationEvidence{}, err
+		return sourceHTTPResult{}, err
 	}
-	body, contentType, _, statusCode, err = s.requestHTTPSource(rawURL, upstreamToken)
+	resp, err = s.requestHTTPSource(http.MethodGet, rawURL, upstreamToken)
 	if err != nil {
-		return nil, "", false, "", "", upstreamDerivationEvidence{}, err
+		return sourceHTTPResult{}, err
 	}
-	if statusCode < 200 || statusCode > 299 {
-		return nil, "", false, "", "", upstreamDerivationEvidence{}, fmt.Errorf("source %s returned %d after UMA authorization", rawURL, statusCode)
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return sourceHTTPResult{}, fmt.Errorf("source %s returned %d after UMA authorization", rawURL, resp.StatusCode)
 	}
-	return body, contentType, true, asURI, ticket, upstreamDerivationEvidenceFrom(asURI, upstreamResponse), nil
+	return sourceHTTPResult{
+		Body:                resp.Body,
+		ContentType:         resp.ContentType,
+		ETag:                resp.ETag,
+		Protected:           true,
+		AuthorizationServer: asURI,
+		Ticket:              ticket,
+		UpstreamDerivation:  upstreamDerivationEvidenceFrom(asURI, upstreamResponse),
+	}, nil
 }
 
-func (s *Server) requestHTTPSource(rawURL, token string) ([]byte, string, string, int, error) {
-	log.Printf("httpapi: requesting upstream source %s (token-present=%t)", rawURL, token != "")
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+func (s *Server) serviceNeedsMaterialization(svc serviceInstance) (bool, error) {
+	if svc.OutputPath == "" {
+		return true, nil
+	}
+	if _, err := os.Stat(svc.OutputPath); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	if len(svc.SourceMetadata) != len(svc.SourceURLs) {
+		return true, nil
+	}
+	metadataByURL := make(map[string]SourceMetadata, len(svc.SourceMetadata))
+	for _, metadata := range svc.SourceMetadata {
+		metadataByURL[metadata.URL] = metadata
+	}
+	for _, sourceURL := range svc.SourceURLs {
+		metadata, ok := metadataByURL[sourceURL]
+		if !ok {
+			return true, nil
+		}
+		if metadata.ETag == "" {
+			continue
+		}
+		currentETag, err := s.currentHTTPSourceETag(sourceURL, metadata)
+		if err != nil {
+			return false, err
+		}
+		if currentETag == "" || currentETag != metadata.ETag {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Server) currentHTTPSourceETag(rawURL string, metadata SourceMetadata) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", nil
+	}
+	token := ""
+	if metadata.AuthorizationServer != "" {
+		token = s.cachedUpstreamToken(rawURL, metadata.AuthorizationServer)
+	}
+	resp, err := s.requestHTTPSource(http.MethodHead, rawURL, token)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+		return resp.ETag, nil
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return "", nil
+	}
+	asURI, ticket, ok := parseUMAChallenge(resp.Challenge)
+	if !ok {
+		return "", fmt.Errorf("source %s returned 401 without UMA challenge", rawURL)
+	}
+	upstreamToken, _, err := s.obtainUpstreamRPT(rawURL, asURI, ticket)
+	if err != nil {
+		return "", err
+	}
+	resp, err = s.requestHTTPSource(http.MethodHead, rawURL, upstreamToken)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+		return resp.ETag, nil
+	}
+	return "", nil
+}
+
+func (s *Server) cachedUpstreamToken(sourceURL, asURI string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upstreamTokens[upstreamTokenCacheKey(sourceURL, asURI)].AccessToken
+}
+
+func (s *Server) cachedUpstreamTokenResponse(sourceURL, asURI string) upstreamTokenResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upstreamTokens[upstreamTokenCacheKey(sourceURL, asURI)].Response
+}
+
+func (s *Server) cachedUpstreamDerivationResourceID(sourceURL, asURI string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upstreamTokens[upstreamTokenCacheKey(sourceURL, asURI)].DerivationResourceID
+}
+
+func (s *Server) storeUpstreamToken(sourceURL, asURI, ticket string, response upstreamTokenResponse) {
+	derivationResourceID := response.DerivationResourceID
+	if derivationResourceID == "" {
+		derivationResourceID = s.cachedUpstreamDerivationResourceID(sourceURL, asURI)
+	}
+	s.mu.Lock()
+	s.upstreamTokens[upstreamTokenCacheKey(sourceURL, asURI)] = cachedUpstreamToken{
+		AccessToken:          response.AccessToken,
+		AuthorizationServer:  asURI,
+		Ticket:               ticket,
+		DerivationResourceID: derivationResourceID,
+		Response:             response,
+	}
+	s.mu.Unlock()
+}
+
+func upstreamTokenCacheKey(sourceURL, asURI string) string {
+	return asURI + "\x00" + sourceURL
+}
+
+type sourceHTTPResponse struct {
+	Body        []byte
+	ContentType string
+	ETag        string
+	Challenge   string
+	StatusCode  int
+}
+
+func (s *Server) requestHTTPSource(method, rawURL, token string) (sourceHTTPResponse, error) {
+	log.Printf("httpapi: requesting upstream source %s %s (token-present=%t)", method, rawURL, token != "")
+	req, err := http.NewRequest(method, rawURL, nil)
 	if err != nil {
 		log.Printf("httpapi: failed to build upstream source request for %s: %v", rawURL, err)
-		return nil, "", "", 0, err
+		return sourceHTTPResponse{}, err
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -1439,20 +1648,26 @@ func (s *Server) requestHTTPSource(rawURL, token string) ([]byte, string, string
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("httpapi: upstream source request failed for %s: %v", rawURL, err)
-		return nil, "", "", 0, err
+		return sourceHTTPResponse{}, err
 	}
 	body, err := io.ReadAll(resp.Body)
 	closeErr := resp.Body.Close()
 	if err != nil {
 		log.Printf("httpapi: reading upstream source response failed for %s: %v", rawURL, err)
-		return nil, "", "", 0, err
+		return sourceHTTPResponse{}, err
 	}
 	if closeErr != nil {
 		log.Printf("httpapi: closing upstream source response failed for %s: %v", rawURL, closeErr)
-		return nil, "", "", 0, closeErr
+		return sourceHTTPResponse{}, closeErr
 	}
 	log.Printf("httpapi: upstream source response %s -> %d", rawURL, resp.StatusCode)
-	return body, resp.Header.Get("Content-Type"), resp.Header.Get("WWW-Authenticate"), resp.StatusCode, nil
+	return sourceHTTPResponse{
+		Body:        body,
+		ContentType: resp.Header.Get("Content-Type"),
+		ETag:        resp.Header.Get("ETag"),
+		Challenge:   resp.Header.Get("WWW-Authenticate"),
+		StatusCode:  resp.StatusCode,
+	}, nil
 }
 
 func (s *Server) obtainUpstreamRPT(sourceURL, asURI, ticket string) (string, upstreamTokenResponse, error) {
@@ -1463,19 +1678,22 @@ func (s *Server) obtainUpstreamRPT(sourceURL, asURI, ticket string) (string, ups
 		if s.accountAccessToken == "" {
 			return "", upstreamTokenResponse{}, fmt.Errorf("account access token is not available")
 		}
-		upstreamToken, err := s.cfg.requestUMAAccessToken(asURI, ticket, s.accountAccessToken)
+		derivationResourceID := s.cachedUpstreamDerivationResourceID(sourceURL, asURI)
+		upstreamToken, err := s.cfg.requestUMAAccessToken(asURI, ticket, s.accountAccessToken, derivationResourceID)
 		if err != nil {
 			if requestErr := s.submitUpstreamAccessRequest(sourceURL, asURI, http.MethodGet); requestErr != nil {
 				return "", upstreamTokenResponse{}, fmt.Errorf("UMA token request failed (%v) and access request failed (%v)", err, requestErr)
 			}
 			return "", upstreamTokenResponse{}, fmt.Errorf("UMA token request failed for %s; access request submitted to %s", sourceURL, joinURL(asURI, "/requests"))
 		}
+		s.storeUpstreamToken(sourceURL, asURI, ticket, upstreamToken)
 		return s.recordUpstreamAccess(sourceURL, asURI, ticket, upstreamToken.AccessToken), upstreamToken, nil
 	}
 	upstreamToken := s.cfg.UpstreamRPT
 	if upstreamToken == "" {
 		return "", upstreamTokenResponse{}, fmt.Errorf("upstream UMA authorization failed for %s", sourceURL)
 	}
+	s.storeUpstreamToken(sourceURL, asURI, ticket, upstreamTokenResponse{AccessToken: upstreamToken})
 	return s.recordUpstreamAccess(sourceURL, asURI, ticket, upstreamToken), upstreamTokenResponse{}, nil
 }
 
@@ -1495,7 +1713,7 @@ func (s *Server) submitUpstreamAccessRequest(resourceURL, asURI, method string) 
 		log.Printf("httpapi: failed to build upstream access request for %s: %v", resourceURL, err)
 		return err
 	}
-	req.Header.Set("Authorization", "WebID "+url.QueryEscape(requestingParty))
+	req.Header.Set("Authorization", "WebID "+base64.StdEncoding.EncodeToString([]byte(requestingParty)))
 	req.Header.Set("Content-Type", "text/turtle")
 
 	status, responseBody, err := s.doAuthorizationServer(req)

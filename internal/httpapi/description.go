@@ -128,6 +128,7 @@ type SourceMetadata struct {
 	URL                 string `json:"url"`
 	MediaType           string `json:"media_type"`
 	SHA256              string `json:"sha256"`
+	ETag                string `json:"etag,omitempty"`
 	Protected           bool   `json:"protected"`
 	AuthorizationServer string `json:"authorization_server,omitempty"`
 	PermissionTicket    string `json:"permission_ticket,omitempty"`
