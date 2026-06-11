@@ -573,6 +573,48 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 		http.NotFound(w, r)
 		return
 	}
+
+	req := createServiceRequest{
+		Transformation: svc.Transformation,
+		Query:          svc.Query,
+		SourceURLs:     append([]string(nil), svc.SourceURLs...),
+	}
+	output, err := s.materialize(serviceID, req, svc.QueryType)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "oxigraph") {
+			status = http.StatusInternalServerError
+		}
+		http.Error(w, "rematerialization failed: "+err.Error(), status)
+		return
+	}
+
+	derivation, err := s.updateOutputAssetDerivedFrom(svc.AASResourceID, serviceID, output)
+	status := "ready"
+	errorMessage := ""
+	var derivedFrom []Derivation
+	if err == nil {
+		derivedFrom = []Derivation{derivation}
+	} else {
+		status = "failed"
+		errorMessage = err.Error()
+	}
+
+	s.mu.Lock()
+	if existing, exists := s.services[aggID][serviceID]; exists {
+		existing.SourceMetadata = cloneSourceMetadata(output.Sources)
+		existing.OutputMediaType = output.MediaType
+		existing.OutputPath = output.Path
+		existing.DerivedFrom = cloneDerivations(derivedFrom)
+		existing.UpstreamDerivation = output.UpstreamDerivation
+		existing.Status = status
+		existing.ErrorMessage = errorMessage
+		s.services[aggID][serviceID] = existing
+		s.serviceRevisions[aggID]++
+		svc = existing
+	}
+	s.mu.Unlock()
+
 	validRPT, err := s.outputRPTIsValid(bearerToken(r.Header.Get("Authorization")), svc.AASResourceID)
 	if err != nil {
 		http.Error(w, "RPT validation failed: "+err.Error(), http.StatusBadGateway)
@@ -1257,7 +1299,8 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	for i, sourceURL := range req.SourceURLs {
 		source, err := s.stageSource(stagingDir, i, sourceURL)
 		if err != nil {
-			return materializedOutput{}, err
+			log.Printf("httpapi: failed to stage source %s: %v", sourceURL, err)
+			continue
 		}
 		sources = append(sources, source.Metadata)
 		if !upstreamDerivation.hasData() && source.UpstreamDerivation.hasData() {
@@ -1268,7 +1311,8 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 			args = append(args, "--format", source.Format)
 		}
 		if err := runOxigraph(s.cfg.OxigraphBinary, args...); err != nil {
-			return materializedOutput{}, err
+			log.Printf("httpapi: failed to load source %s into oxigraph: %v", sourceURL, err)
+			continue
 		}
 	}
 
@@ -1286,6 +1330,14 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		resultFormat = "json"
 	default:
 		return materializedOutput{}, fmt.Errorf("unsupported query type %s", queryType)
+	}
+
+	if len(sources) == 0 {
+		outputPath := filepath.Join(outputDir, "empty."+resultFormat)
+		if err := os.WriteFile(outputPath, []byte(""), 0o644); err != nil {
+			return materializedOutput{}, err
+		}
+		return materializedOutput{MediaType: mediaType, Path: outputPath, Sources: sources, UpstreamDerivation: upstreamDerivation}, nil
 	}
 
 	outputPath := filepath.Join(outputDir, outputName)
@@ -1443,7 +1495,7 @@ func (s *Server) submitUpstreamAccessRequest(resourceURL, asURI, method string) 
 		log.Printf("httpapi: failed to build upstream access request for %s: %v", resourceURL, err)
 		return err
 	}
-	req.Header.Set("Authorization", "WebID "+base64.StdEncoding.EncodeToString([]byte(requestingParty)))
+	req.Header.Set("Authorization", "WebID "+url.QueryEscape(requestingParty))
 	req.Header.Set("Content-Type", "text/turtle")
 
 	status, responseBody, err := s.doAuthorizationServer(req)
