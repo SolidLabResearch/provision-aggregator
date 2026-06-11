@@ -1,0 +1,8 @@
+.cache/
+conformance/go-test.json
+conformance/results.json
+data/
+aggregator.config.json
+.idea
+spec.bs
+temp/

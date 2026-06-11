@@ -1,0 +1,603 @@
+implementation: aggregator-provision
+
+covers:
+  AGGR-SERVER-001:
+    tests:
+      - TestAGGRSERVER001
+    file: test/conformance/server_description_test.go
+  AGGR-SERVER-002:
+    tests:
+      - TestAGGRSERVER002
+    file: test/conformance/server_description_test.go
+  AGGR-SERVER-003:
+    tests:
+      - TestAGGRSERVER003
+    file: test/conformance/server_description_test.go
+  AGGR-SERVER-004:
+    tests:
+      - TestAGGRSERVER004
+    file: test/conformance/server_description_test.go
+  AGGR-SERVER-005:
+    tests:
+      - TestAGGRSERVER005
+    file: test/conformance/server_description_test.go
+  AGGR-SERVER-006:
+    tests:
+      - TestAGGRSERVER006
+    file: test/conformance/server_description_test.go
+  AGGR-SERVER-007:
+    tests:
+      - TestAGGRSERVER007
+    file: test/conformance/server_description_test.go
+  AGGR-SERVER-008:
+    tests:
+      - TestAGGRSERVER008
+    file: test/conformance/server_description_test.go
+  AGGR-RDF-001:
+    tests:
+      - TestAGGRRDF001
+    file: test/conformance/server_description_test.go
+  AGGR-RDF-002:
+    tests:
+      - TestAGGRRDF002
+    file: test/conformance/server_description_test.go
+  AGGR-RDF-003:
+    tests:
+      - TestAGGRRDF003
+    file: test/conformance/server_description_test.go
+  AGGR-RDF-004:
+    tests:
+      - TestAGGRRDF004
+    file: test/conformance/transformation_catalog_remaining_test.go
+  AGGR-RDF-005:
+    tests:
+      - TestAGGRRDF005
+    file: test/conformance/transformation_catalog_remaining_test.go
+  AGGR-RDF-006:
+    tests:
+      - TestAGGRRDF006
+    file: test/conformance/transformation_catalog_remaining_test.go
+  AGGR-RDF-007:
+    tests:
+      - TestAGGRRDF007
+    file: test/conformance/transformation_catalog_remaining_test.go
+  AGGR-RDF-008:
+    tests:
+      - TestAGGRRDF008
+    file: test/conformance/transformation_catalog_remaining_test.go
+  AGGR-RDF-009:
+    tests:
+      - TestAGGRRDF009
+    file: test/conformance/transformation_catalog_remaining_test.go
+  AGGR-RDF-010:
+    tests:
+      - TestAGGRRDF010
+    file: test/conformance/transformation_catalog_remaining_test.go
+  AGGR-RDF-011:
+    tests:
+      - TestAGGRRDF011
+    file: test/conformance/transformation_catalog_remaining_test.go
+  AGGR-RDF-012:
+    tests:
+      - TestAGGRRDF012
+    file: test/conformance/transformation_catalog_remaining_test.go
+  AGGR-INST-001:
+    tests:
+      - TestAGGRINST001
+    file: test/conformance/management_provision_test.go
+  AGGR-INST-002:
+    tests:
+      - TestAGGRINST002
+    file: test/conformance/management_provision_test.go
+  AGGR-INST-003:
+    tests:
+      - TestAGGRINST003
+    file: test/conformance/management_provision_test.go
+  AGGR-INST-004:
+    tests:
+      - TestAGGRINST004
+    file: test/conformance/management_provision_test.go
+  AGGR-INST-005:
+    tests:
+      - TestAGGRINST005
+    file: test/conformance/management_provision_test.go
+  AGGR-MGMT-000:
+    tests:
+      - TestAGGRMGMT000
+    file: test/conformance/management_provision_test.go
+  AGGR-MGMT-001:
+    tests:
+      - TestAGGRMGMT001
+    file: test/conformance/management_provision_test.go
+  AGGR-MGMT-002:
+    tests:
+      - TestAGGRMGMT002
+    file: test/conformance/management_provision_test.go
+  AGGR-MGMT-003:
+    tests:
+      - TestAGGRMGMT003
+    file: test/conformance/management_provision_test.go
+  AGGR-MGMT-004:
+    tests:
+      - TestAGGRMGMT004
+    file: test/conformance/management_provision_test.go
+  AGGR-MGMT-007:
+    tests:
+      - TestAGGRMGMT007
+    file: test/conformance/management_provision_test.go
+  AGGR-MGMT-011:
+    tests:
+      - TestAGGRMGMT011
+    file: test/conformance/management_provision_test.go
+  AGGR-MGMT-012:
+    tests:
+      - TestAGGRMGMT012
+    file: test/conformance/management_provision_test.go
+  AGGR-MGMT-013:
+    tests:
+      - TestAGGRMGMT013
+    file: test/conformance/management_provision_test.go
+  AGGR-MGMT-014:
+    tests:
+      - TestAGGRMGMT014
+    file: test/conformance/management_provision_test.go
+  AGGR-SVC-001:
+    tests:
+      - TestAGGRSVC001
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-002:
+    tests:
+      - TestAGGRSVC002
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-003:
+    tests:
+      - TestAGGRSVC003
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-004:
+    tests:
+      - TestAGGRSVC004
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-005:
+    tests:
+      - TestAGGRSVC005
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-006:
+    tests:
+      - TestAGGRSVC006
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-007:
+    tests:
+      - TestAGGRSVC007
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-008:
+    tests:
+      - TestAGGRSVC008
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-009:
+    tests:
+      - TestAGGRSVC009
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-011:
+    tests:
+      - TestAGGRSVC011
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-012:
+    tests:
+      - TestAGGRSVC012
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-013:
+    tests:
+      - TestAGGRSVC013
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-014:
+    tests:
+      - TestAGGRSVC014
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-015:
+    tests:
+      - TestAGGRSVC015
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-029:
+    tests:
+      - TestAGGRSVC029
+    file: test/conformance/service_collection_test.go
+  AGGR-SVC-030:
+    tests:
+      - TestAGGRSVC030
+    file: test/conformance/service_collection_test.go
+  AGGR-SEC-001:
+    tests:
+      - TestAGGRSEC001
+    file: test/conformance/service_collection_test.go
+  AGGR-SEC-002:
+    tests:
+      - TestAGGRSEC002
+    file: test/conformance/service_collection_test.go
+  AGGR-SEC-003:
+    tests:
+      - TestAGGRSEC003
+    file: test/conformance/service_collection_test.go
+  AGGR-SEC-004:
+    tests:
+      - TestAGGRSEC004
+    file: test/conformance/service_collection_test.go
+  AGGR-SEC-005:
+    tests:
+      - TestAGGRSEC005
+    file: test/conformance/service_collection_test.go
+  AGGR-MGMT-005:
+    tests:
+      - TestAGGRMGMT005
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-006:
+    tests:
+      - TestAGGRMGMT006
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-008:
+    tests:
+      - TestAGGRMGMT008
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-009:
+    tests:
+      - TestAGGRMGMT009
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-010:
+    tests:
+      - TestAGGRMGMT010
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-015:
+    tests:
+      - TestAGGRMGMT015
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-016:
+    tests:
+      - TestAGGRMGMT016
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-017:
+    tests:
+      - TestAGGRMGMT017
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-018:
+    tests:
+      - TestAGGRMGMT018
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-019:
+    tests:
+      - TestAGGRMGMT019
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-020:
+    tests:
+      - TestAGGRMGMT020
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-021:
+    tests:
+      - TestAGGRMGMT021
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-022:
+    tests:
+      - TestAGGRMGMT022
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-023:
+    tests:
+      - TestAGGRMGMT023
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-024:
+    tests:
+      - TestAGGRMGMT024
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-025:
+    tests:
+      - TestAGGRMGMT025
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-026:
+    tests:
+      - TestAGGRMGMT026
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-027:
+    tests:
+      - TestAGGRMGMT027
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-028:
+    tests:
+      - TestAGGRMGMT028
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-029:
+    tests:
+      - TestAGGRMGMT029
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-030:
+    tests:
+      - TestAGGRMGMT030
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-031:
+    tests:
+      - TestAGGRMGMT031
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-032:
+    tests:
+      - TestAGGRMGMT032
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-033:
+    tests:
+      - TestAGGRMGMT033
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-034:
+    tests:
+      - TestAGGRMGMT034
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-035:
+    tests:
+      - TestAGGRMGMT035
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-036:
+    tests:
+      - TestAGGRMGMT036
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-037:
+    tests:
+      - TestAGGRMGMT037
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-038:
+    tests:
+      - TestAGGRMGMT038
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-039:
+    tests:
+      - TestAGGRMGMT039
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-040:
+    tests:
+      - TestAGGRMGMT040
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-041:
+    tests:
+      - TestAGGRMGMT041
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-042:
+    tests:
+      - TestAGGRMGMT042
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-043:
+    tests:
+      - TestAGGRMGMT043
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-044:
+    tests:
+      - TestAGGRMGMT044
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-045:
+    tests:
+      - TestAGGRMGMT045
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-046:
+    tests:
+      - TestAGGRMGMT046
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-047:
+    tests:
+      - TestAGGRMGMT047
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-048:
+    tests:
+      - TestAGGRMGMT048
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-049:
+    tests:
+      - TestAGGRMGMT049
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-050:
+    tests:
+      - TestAGGRMGMT050
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-055:
+    tests:
+      - TestAGGRMGMT055
+    file: test/conformance/management_remaining_test.go
+  AGGR-MGMT-056:
+    tests:
+      - TestAGGRMGMT056
+    file: test/conformance/management_remaining_test.go
+  AGGR-PROV-001:
+    tests:
+      - TestAGGRPROV001
+    file: test/conformance/service_remaining_test.go
+  AGGR-PROV-002:
+    tests:
+      - TestAGGRPROV002
+    file: test/conformance/service_remaining_test.go
+  AGGR-PROV-003:
+    tests:
+      - TestAGGRPROV003
+    file: test/conformance/service_remaining_test.go
+  AGGR-PROV-004:
+    tests:
+      - TestAGGRPROV004
+    file: test/conformance/service_remaining_test.go
+  AGGR-SEC-006:
+    tests:
+      - TestAGGRSEC006
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-007:
+    tests:
+      - TestAGGRSEC007
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-008:
+    tests:
+      - TestAGGRSEC008
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-009:
+    tests:
+      - TestAGGRSEC009
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-010:
+    tests:
+      - TestAGGRSEC010
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-011:
+    tests:
+      - TestAGGRSEC011
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-012:
+    tests:
+      - TestAGGRSEC012
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-013:
+    tests:
+      - TestAGGRSEC013
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-014:
+    tests:
+      - TestAGGRSEC014
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-015:
+    tests:
+      - TestAGGRSEC015
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-016:
+    tests:
+      - TestAGGRSEC016
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-017:
+    tests:
+      - TestAGGRSEC017
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-018:
+    tests:
+      - TestAGGRSEC018
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-019:
+    tests:
+      - TestAGGRSEC019
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-020:
+    tests:
+      - TestAGGRSEC020
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-021:
+    tests:
+      - TestAGGRSEC021
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-022:
+    tests:
+      - TestAGGRSEC022
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-023:
+    tests:
+      - TestAGGRSEC023
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-024:
+    tests:
+      - TestAGGRSEC024
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-025:
+    tests:
+      - TestAGGRSEC025
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-026:
+    tests:
+      - TestAGGRSEC026
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SEC-027:
+    tests:
+      - TestAGGRSEC027
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SEC-028:
+    tests:
+      - TestAGGRSEC028
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-029:
+    tests:
+      - TestAGGRSEC029
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-030:
+    tests:
+      - TestAGGRSEC030
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-031:
+    tests:
+      - TestAGGRSEC031
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-032:
+    tests:
+      - TestAGGRSEC032
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-033:
+    tests:
+      - TestAGGRSEC033
+    file: test/conformance/security_remaining_test.go
+  AGGR-SEC-034:
+    tests:
+      - TestAGGRSEC034
+    file: test/conformance/security_remaining_test.go
+  AGGR-SVC-010:
+    tests:
+      - TestAGGRSVC010
+    file: test/conformance/service_remaining_test.go
+  AGGR-SVC-024:
+    tests:
+      - TestAGGRSVC024
+    file: test/conformance/service_remaining_test.go
+  AGGR-SVC-025:
+    tests:
+      - TestAGGRSVC025
+    file: test/conformance/service_remaining_test.go
+  AGGR-SVC-026:
+    tests:
+      - TestAGGRSVC026
+    file: test/conformance/service_remaining_test.go
+  AGGR-SVC-027:
+    tests:
+      - TestAGGRSVC027
+    file: test/conformance/service_remaining_test.go
+  AGGR-SVC-028:
+    tests:
+      - TestAGGRSVC028
+    file: test/conformance/service_remaining_test.go
+  AGGR-SVC-031:
+    tests:
+      - TestAGGRSVC031
+    file: test/conformance/service_remaining_test.go
+  AGGR-SVC-032:
+    tests:
+      - TestAGGRSVC032
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SVC-033:
+    tests:
+      - TestAGGRSVC033
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SVC-034:
+    tests:
+      - TestAGGRSVC034
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SVC-035:
+    tests:
+      - TestAGGRSVC035
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SVC-036:
+    tests:
+      - TestAGGRSVC036
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SVC-037:
+    tests:
+      - TestAGGRSVC037
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SVC-038:
+    tests:
+      - TestAGGRSVC038
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SVC-039:
+    tests:
+      - TestAGGRSVC039
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SVC-040:
+    tests:
+      - TestAGGRSVC040
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SVC-041:
+    tests:
+      - TestAGGRSVC041
+    file: test/conformance/service_deployment_spec_test.go
+  AGGR-SVC-042:
+    tests:
+      - TestAGGRSVC042
+    file: test/conformance/service_deployment_spec_test.go

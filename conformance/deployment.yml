@@ -1,0 +1,27 @@
+implementation: aggregator-provision
+version: 0.1.0
+
+capabilities:
+  core.discovery: true
+  rdf.catalog: true
+  management.endpoint: true
+  management.none: false
+  management.provision: true
+  management.authorization_code: false
+  management.device_code: false
+  instance.description: true
+  service.collection: true
+  service.description: true
+  service.create: true
+  service.delete: true
+  service.patch: false
+  service.put: false
+  provenance.log: true
+  security.uma: true
+  security.cors: true
+
+inputs:
+  baseUrl: http://localhost:8080/
+  managementEndpoint: http://localhost:8080/registration
+  aggregatorDescription: http://localhost:8080/aggregators/example
+  serviceCollectionUrl: http://localhost:8080/aggregators/example/services
