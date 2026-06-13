@@ -563,6 +563,7 @@ func (s *Server) liveRPTIsValid(token, resourceID string, requiredScopes []strin
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
+	log.Printf("httpapi: introspecting RPT for resource %s with scopes %v", resourceID, requiredScopes)
 	status, body, err := s.doAuthorizationServer(req)
 	if err != nil {
 		return false, err
@@ -575,14 +576,17 @@ func (s *Server) liveRPTIsValid(token, resourceID string, requiredScopes []strin
 		return false, fmt.Errorf("decode %s response: %w", req.URL.String(), err)
 	}
 	if !response.Active {
+		log.Printf("httpapi: RPT is not active")
 		return false, nil
 	}
 	authorizationResourceID := s.authorizationResourceID(resourceID)
 	for _, permission := range response.Permissions {
 		if permission.ResourceID == authorizationResourceID && containsAllStrings(permission.ResourceScopes, requiredScopes) {
+			log.Printf("httpapi: RPT is valid for resource %s with scopes %v", resourceID, requiredScopes)
 			return true, nil
 		}
 	}
+	log.Printf("httpapi: RPT is invalid")
 	return false, nil
 }
 

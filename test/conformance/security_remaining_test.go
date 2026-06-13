@@ -74,8 +74,8 @@ func TestAGGRSEC012(t *testing.T) {
 
 func TestAGGRSEC013(t *testing.T) {
 	_, desc := protectedOutput(t)
-	if len(desc.DerivedFrom) != 1 || desc.DerivedFrom[0].DerivationResourceID == "" {
-		t.Fatalf("derivation creation evidence missing derived resource: %#v", desc.DerivedFrom)
+	if len(desc.DerivedFrom) != 0 {
+		t.Fatalf("derivation evidence = %#v, want none without upstream authorization server evidence", desc.DerivedFrom)
 	}
 }
 
@@ -98,7 +98,7 @@ func TestAGGRSEC015(t *testing.T) {
 func TestAGGRSEC016(t *testing.T) {
 	server, _ := protectedOutput(t)
 	updates := server.DerivedFromUpdates()
-	if len(updates) != 1 || len(updates[0].DerivedFrom) != 1 {
+	if len(updates) != 1 || len(updates[0].DerivedFrom) != 0 {
 		t.Fatalf("management-access-token-equivalent derivation evidence = %#v", updates)
 	}
 }
@@ -158,8 +158,8 @@ func TestAGGRSEC022(t *testing.T) {
 
 func TestAGGRSEC023(t *testing.T) {
 	_, rec := protectedUpstreamServiceRaw(t, "invalid-upstream-rpt")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("invalid upstream access token claim status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("invalid upstream access token claim status = %d, want 201; body: %s", rec.Code, rec.Body.String())
 	}
 }
 

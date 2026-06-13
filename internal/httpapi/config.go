@@ -10,7 +10,6 @@ type Config struct {
 	BaseURL                                         string
 	Version                                         string
 	ClientID                                        string
-	IDPIssuer                                       string
 	Subject                                         string
 	AccountServerURL                                string
 	AccountEmail                                    string
@@ -23,7 +22,6 @@ type Config struct {
 	AuthorizationServerResourceRegistrationEndpoint string
 	AuthorizationServerRegistrationEndpoint         string
 	AASIssuer                                       string
-	UASIssuer                                       string
 	UASDerivationResourcesEndpoint                  string
 	DerivationResourceIDPrefix                      string
 	FailDerivedFromUpdate                           bool
@@ -47,10 +45,8 @@ func DefaultConfig(baseURL string) Config {
 		BaseURL:                    strings.TrimRight(baseURL, "/"),
 		Version:                    "0.1.0",
 		ClientID:                   "aggregator-provision",
-		IDPIssuer:                  "https://idp.example",
 		Subject:                    "https://aggregator.example/profile/card#me",
 		AASIssuer:                  "https://aas.example",
-		UASIssuer:                  "https://uas.example",
 		DerivationResourceIDPrefix: "derivation-resource",
 		OutputReadScope:            "read",
 		ValidOutputRPTs:            []string{"valid-output-rpt"},

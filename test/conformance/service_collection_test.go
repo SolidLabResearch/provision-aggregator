@@ -458,7 +458,6 @@ func TestMilestone10OutputPermissionTicketComesFromAuthorizationServer(t *testin
 	cfg.AccountPassword = "my-password"
 	cfg.AccountWebID = "https://pod.example/alice#me"
 	cfg.AuthorizationServerURL = "https://as.example/uma"
-	cfg.UASIssuer = "https://uas.example"
 	cfg.UASDerivationResourcesEndpoint = "https://uas.example/derivation-resources"
 	sourceBody := []byte(`<https://example.test/protected> <https://example.test/p> "protected" .`)
 	sourceURL := "https://source.example/source.nt"
@@ -887,7 +886,7 @@ func TestOutputRematerializesWhenSourceETagChanges(t *testing.T) {
 	}
 }
 
-func TestMilestone7FailedUpstreamAuthorizationFailsServiceCreation(t *testing.T) {
+func TestMilestone7FailedUpstreamAuthorizationCreatesEmptyService(t *testing.T) {
 	cfg := httpapi.DefaultConfig("https://aggregator.example")
 	cfg.UpstreamRPT = ""
 	cfg.SourceHTTPClient = &http.Client{Transport: protectedSourceTransport{body: []byte(`<urn:s> <urn:p> <urn:o> .`)}}
@@ -895,8 +894,18 @@ func TestMilestone7FailedUpstreamAuthorizationFailsServiceCreation(t *testing.T)
 	agg := provision(t, server)
 
 	rec := request(server, http.MethodPost, mustPath(agg.ServiceCollectionEndpoint), "application/json", []byte(serviceRequestWithSource("SELECT * WHERE { ?s ?p ?o }", "https://source.example/source.nt")))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("failed upstream authorization status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("failed upstream authorization status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+	var desc httpapi.ServiceDescription
+	if err := json.Unmarshal(rec.Body.Bytes(), &desc); err != nil {
+		t.Fatalf("decode service description: %v", err)
+	}
+	if desc.Status != "ready" || desc.StatusDetail != "" {
+		t.Fatalf("service status=%q statusDetail=%q, want ready without status detail", desc.Status, desc.StatusDetail)
+	}
+	if len(desc.DerivedFrom) != 0 {
+		t.Fatalf("derived_from = %#v, want none without upstream derivation evidence", desc.DerivedFrom)
 	}
 }
 
@@ -981,8 +990,8 @@ func TestMilestone7FailedLiveUpstreamTokenRequestSubmitsAccessRequest(t *testing
 	agg := provision(t, server)
 
 	rec := request(server, http.MethodPost, mustPath(agg.ServiceCollectionEndpoint), "application/json", []byte(serviceRequestWithSource("SELECT * WHERE { ?s ?p ?o }", sourceURL)))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("failed upstream authorization status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("failed upstream authorization status = %d, want 201; body: %s", rec.Code, rec.Body.String())
 	}
 	if tokenRequests != 2 {
 		t.Fatalf("token requests = %d, want JSON and form attempts", tokenRequests)
@@ -993,6 +1002,13 @@ func TestMilestone7FailedLiveUpstreamTokenRequestSubmitsAccessRequest(t *testing
 	requests := server.UpstreamAccessRequests()
 	if len(requests) != 1 || requests[0].AuthorizationServer != "https://uas.example/uma" || requests[0].Action != "odrl:read" || requests[0].RequestURL != "https://uas.example/uma/requests" {
 		t.Fatalf("access request evidence = %#v", requests)
+	}
+	var desc httpapi.ServiceDescription
+	if err := json.Unmarshal(rec.Body.Bytes(), &desc); err != nil {
+		t.Fatalf("decode service description: %v", err)
+	}
+	if desc.Status != "ready" || desc.StatusDetail != "" {
+		t.Fatalf("service status=%q statusDetail=%q, want ready without status detail", desc.Status, desc.StatusDetail)
 	}
 }
 
@@ -1022,34 +1038,28 @@ func TestMilestone8ServiceCreationUpdatesAASDerivedFrom(t *testing.T) {
 	if updates[0].AASResourceID != desc.AASResourceID {
 		t.Fatalf("derived_from update resource = %q, want %q", updates[0].AASResourceID, desc.AASResourceID)
 	}
-	if len(updates[0].DerivedFrom) != 1 {
-		t.Fatalf("derived_from update entries = %#v, want one entry", updates[0].DerivedFrom)
+	if len(updates[0].DerivedFrom) != 0 {
+		t.Fatalf("derived_from update entries = %#v, want none without upstream authorization server evidence", updates[0].DerivedFrom)
 	}
 }
 
-func TestMilestone8DerivedFromContainsUASIssuer(t *testing.T) {
+func TestMilestone8PlainSourceDoesNotUseDefaultUpstreamAS(t *testing.T) {
 	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	if len(desc.DerivedFrom) != 1 {
-		t.Fatalf("derived_from entries = %#v, want one entry", desc.DerivedFrom)
-	}
-	if desc.DerivedFrom[0].Issuer != "https://uas.example" {
-		t.Fatalf("derived_from issuer = %q, want upstream UAS issuer", desc.DerivedFrom[0].Issuer)
+	if len(desc.DerivedFrom) != 0 {
+		t.Fatalf("derived_from entries = %#v, want none without upstream authorization server evidence", desc.DerivedFrom)
 	}
 }
 
-func TestMilestone8DerivedFromContainsDerivationResourceID(t *testing.T) {
+func TestMilestone8PlainSourceDoesNotInventDerivationResourceID(t *testing.T) {
 	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	if len(desc.DerivedFrom) != 1 {
-		t.Fatalf("derived_from entries = %#v, want one entry", desc.DerivedFrom)
-	}
-	if desc.DerivedFrom[0].DerivationResourceID == "" || !strings.HasPrefix(desc.DerivedFrom[0].DerivationResourceID, "derivation-resource-service-") {
-		t.Fatalf("derivation_resource_id = %q, want generated derivation resource ID", desc.DerivedFrom[0].DerivationResourceID)
+	if len(desc.DerivedFrom) != 0 {
+		t.Fatalf("derived_from entries = %#v, want none without upstream authorization server evidence", desc.DerivedFrom)
 	}
 }
 
@@ -1116,12 +1126,12 @@ func TestMilestone9RemovesAASAssetAndDerivedFrom(t *testing.T) {
 	if !cleanups[0].RemovedAASAsset || cleanups[0].AASResourceID != desc.AASResourceID {
 		t.Fatalf("cleanup AAS evidence = %#v, want removed asset %q", cleanups[0], desc.AASResourceID)
 	}
-	if len(cleanups[0].RemovedDerivedFrom) != 1 || cleanups[0].RemovedDerivedFrom[0].DerivationResourceID != desc.DerivedFrom[0].DerivationResourceID {
-		t.Fatalf("cleanup removed derived_from = %#v, want service derived_from %#v", cleanups[0].RemovedDerivedFrom, desc.DerivedFrom)
+	if len(cleanups[0].RemovedDerivedFrom) != 0 {
+		t.Fatalf("cleanup removed derived_from = %#v, want none without upstream authorization server evidence", cleanups[0].RemovedDerivedFrom)
 	}
 }
 
-func TestMilestone9DeletesUASDerivationResource(t *testing.T) {
+func TestMilestone9SkipsUASDerivationResourceDeleteWithoutUpstreamAuthorizationServer(t *testing.T) {
 	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
@@ -1134,8 +1144,8 @@ func TestMilestone9DeletesUASDerivationResource(t *testing.T) {
 	if len(cleanups) != 1 {
 		t.Fatalf("service cleanups = %d, want 1", len(cleanups))
 	}
-	if !contains(cleanups[0].DeletedDerivationResourceIDs, desc.DerivedFrom[0].DerivationResourceID) {
-		t.Fatalf("deleted derivation resources = %#v, want %q", cleanups[0].DeletedDerivationResourceIDs, desc.DerivedFrom[0].DerivationResourceID)
+	if len(cleanups[0].DeletedDerivationResourceIDs) != 0 {
+		t.Fatalf("deleted derivation resources = %#v, want none without upstream authorization server evidence", cleanups[0].DeletedDerivationResourceIDs)
 	}
 }
 

@@ -10,7 +10,6 @@ type fileConfig struct {
 	BaseURL                                         *string  `json:"base_url"`
 	Version                                         *string  `json:"version"`
 	ClientID                                        *string  `json:"client_id"`
-	IDPIssuer                                       *string  `json:"idp_issuer"`
 	Subject                                         *string  `json:"subject"`
 	AccountServerURL                                *string  `json:"account_server"`
 	AccountEmail                                    *string  `json:"email"`
@@ -23,7 +22,6 @@ type fileConfig struct {
 	AuthorizationServerResourceRegistrationEndpoint *string  `json:"authorization_server_resource_registration_endpoint"`
 	AuthorizationServerRegistrationEndpoint         *string  `json:"authorization_server_registration_endpoint"`
 	AASIssuer                                       *string  `json:"aas_issuer"`
-	UASIssuer                                       *string  `json:"uas_issuer"`
 	UASDerivationResourcesEndpoint                  *string  `json:"uas_derivation_resources_endpoint"`
 	DerivationResourceIDPrefix                      *string  `json:"derivation_resource_id_prefix"`
 	OutputReadScope                                 *string  `json:"output_read_scope"`
@@ -59,7 +57,6 @@ func applyConfigFile(body []byte, cfg Config) (Config, error) {
 	setString(file.BaseURL, &cfg.BaseURL)
 	setString(file.Version, &cfg.Version)
 	setString(file.ClientID, &cfg.ClientID)
-	setString(file.IDPIssuer, &cfg.IDPIssuer)
 	setString(file.Subject, &cfg.Subject)
 	setString(file.AccountServerURL, &cfg.AccountServerURL)
 	setString(file.AccountEmail, &cfg.AccountEmail)
@@ -72,7 +69,6 @@ func applyConfigFile(body []byte, cfg Config) (Config, error) {
 	setString(file.AuthorizationServerResourceRegistrationEndpoint, &cfg.AuthorizationServerResourceRegistrationEndpoint)
 	setString(file.AuthorizationServerRegistrationEndpoint, &cfg.AuthorizationServerRegistrationEndpoint)
 	setString(file.AASIssuer, &cfg.AASIssuer)
-	setString(file.UASIssuer, &cfg.UASIssuer)
 	setString(file.UASDerivationResourcesEndpoint, &cfg.UASDerivationResourcesEndpoint)
 	setString(file.DerivationResourceIDPrefix, &cfg.DerivationResourceIDPrefix)
 	setString(file.OutputReadScope, &cfg.OutputReadScope)

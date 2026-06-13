@@ -431,7 +431,6 @@ func (s *Server) createAggregator(ownerToken string) (aggregatorInstance, error)
 	agg := aggregatorInstance{
 		ID:          id,
 		Subject:     subjectFromBearer(ownerToken, s.cfg.provisionSubject()),
-		IDPIssuer:   s.cfg.IDPIssuer,
 		OwnerToken:  ownerToken,
 		CreatedAt:   now,
 		TokenExpiry: now.Add(time.Hour),
@@ -534,11 +533,12 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 	derivation, err := s.updateOutputAssetDerivedFrom(asset.ResourceID, serviceID, output)
 	status := "ready"
 	errorMessage := ""
-	derivedFrom := []Derivation{derivation}
+	var derivedFrom []Derivation
 	if err != nil {
 		status = "failed"
 		errorMessage = err.Error()
-		derivedFrom = nil
+	} else if derivation.hasData() {
+		derivedFrom = []Derivation{derivation}
 	}
 
 	svc := s.createService(aggID, serviceID, req, queryType, output, asset, status, errorMessage, derivedFrom)
@@ -658,9 +658,9 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 		status := "ready"
 		errorMessage := ""
 		var derivedFrom []Derivation
-		if err == nil {
+		if err == nil && derivation.hasData() {
 			derivedFrom = []Derivation{derivation}
-		} else {
+		} else if err != nil {
 			status = "failed"
 			errorMessage = err.Error()
 		}
@@ -845,7 +845,7 @@ func (s *Server) registerServiceResource(aggID, serviceID string) error {
 
 func (s *Server) updateOutputAssetDerivedFrom(resourceID, serviceID string, output materializedOutput) (Derivation, error) {
 	derivation := Derivation{
-		Issuer:               s.cfg.UASIssuer,
+		Issuer:               output.UpstreamDerivation.Issuer,
 		DerivationResourceID: s.cfg.DerivationResourceIDPrefix + "-" + serviceID,
 	}
 	managementAccessToken := s.accountAccessToken
@@ -868,10 +868,16 @@ func (s *Server) updateOutputAssetDerivedFrom(resourceID, serviceID string, outp
 		return derivation, fmt.Errorf("AAS derived_from update failed")
 	}
 	scopes := []string{knowsScopeForLocalMode(s.cfg.OutputReadScope)}
-	if err := s.updateUASDerivationResource(derivation.DerivationResourceID, derivation.Issuer, resourceID, serviceID, scopes, managementAccessToken, managementAccessTokenType); err != nil {
-		return derivation, err
+	if derivation.Issuer != "" {
+		if err := s.updateUASDerivationResource(derivation.DerivationResourceID, derivation.Issuer, resourceID, serviceID, scopes, managementAccessToken, managementAccessTokenType); err != nil {
+			return derivation, err
+		}
 	}
-	if err := s.updateConfiguredAuthorizationResource(resourceID, []string{scopeForLocalMode(s.cfg.OutputReadScope)}, "service_output", []Derivation{derivation}); err != nil {
+	derivedFrom := []Derivation(nil)
+	if derivation.Issuer != "" && derivation.DerivationResourceID != "" {
+		derivedFrom = []Derivation{derivation}
+	}
+	if err := s.updateConfiguredAuthorizationResource(resourceID, []string{scopeForLocalMode(s.cfg.OutputReadScope)}, "service_output", derivedFrom); err != nil {
 		return derivation, err
 	}
 
@@ -879,7 +885,7 @@ func (s *Server) updateOutputAssetDerivedFrom(resourceID, serviceID string, outp
 	defer s.mu.Unlock()
 
 	asset := s.outputAssets[resourceID]
-	asset.DerivedFrom = []Derivation{derivation}
+	asset.DerivedFrom = cloneDerivations(derivedFrom)
 	asset.UpstreamDerivation = output.UpstreamDerivation
 	asset.PreviousTokensExpired = true
 	s.outputAssets[resourceID] = asset
@@ -999,7 +1005,7 @@ func (s *Server) deleteUASDerivationResource(derivationResourceID string, upstre
 	if !s.shouldUseLiveAuthorizationServer() && s.cfg.UASDerivationResourcesEndpoint == "" {
 		return nil
 	}
-	metadata, err := s.uasAuthorizationServerMetadata()
+	metadata, err := s.uasAuthorizationServerMetadata(upstreamDerivation.Issuer)
 	if err != nil {
 		return err
 	}
@@ -1040,9 +1046,9 @@ func (s *Server) deleteUASDerivationResource(derivationResourceID string, upstre
 	return nil
 }
 
-func (s *Server) uasAuthorizationServerMetadata() (oidcConfiguration, error) {
-	if s.cfg.UASIssuer != "" {
-		if metadata, err := s.cfg.discoverAuthorizationServerMetadata(s.cfg.UASIssuer); err == nil {
+func (s *Server) uasAuthorizationServerMetadata(issuer string) (oidcConfiguration, error) {
+	if issuer != "" {
+		if metadata, err := s.cfg.discoverAuthorizationServerMetadata(issuer); err == nil {
 			return metadata, nil
 		} else if s.cfg.UASDerivationResourcesEndpoint == "" {
 			return oidcConfiguration{}, err
@@ -1329,6 +1335,18 @@ type sourceHTTPResult struct {
 	UpstreamDerivation  upstreamDerivationEvidence
 }
 
+type inaccessibleSourceError struct {
+	err error
+}
+
+func (e inaccessibleSourceError) Error() string {
+	return e.err.Error()
+}
+
+func (e inaccessibleSourceError) Unwrap() error {
+	return e.err
+}
+
 func (s *Server) materialize(serviceID string, req createServiceRequest, queryType string) (materializedOutput, error) {
 	workspace := filepath.Join(s.cfg.OxigraphWorkdir, serviceID)
 	storeDir := filepath.Join(workspace, "store")
@@ -1355,7 +1373,6 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		source, err := s.stageSource(stagingDir, i, sourceURL)
 		if err != nil {
 			log.Printf("httpapi: failed to stage source %s: %v", sourceURL, err)
-			lastSourceErr = err
 			continue
 		}
 		sources = append(sources, source.Metadata)
@@ -1368,6 +1385,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		}
 		if err := runOxigraph(s.cfg.OxigraphBinary, args...); err != nil {
 			log.Printf("httpapi: failed to load source %s into oxigraph: %v", sourceURL, err)
+			lastSourceErr = err
 			continue
 		}
 	}
@@ -1489,14 +1507,14 @@ func (s *Server) fetchHTTPSource(rawURL string) (sourceHTTPResult, error) {
 	}
 	upstreamToken, upstreamResponse, err = s.obtainUpstreamRPT(rawURL, asURI, ticket)
 	if err != nil {
-		return sourceHTTPResult{}, err
+		return sourceHTTPResult{}, inaccessibleSourceError{err: err}
 	}
 	resp, err = s.requestHTTPSource(http.MethodGet, rawURL, upstreamToken)
 	if err != nil {
 		return sourceHTTPResult{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return sourceHTTPResult{}, fmt.Errorf("source %s returned %d after UMA authorization", rawURL, resp.StatusCode)
+		return sourceHTTPResult{}, inaccessibleSourceError{err: fmt.Errorf("source %s returned %d after UMA authorization", rawURL, resp.StatusCode)}
 	}
 	return sourceHTTPResult{
 		Body:                resp.Body,
@@ -1713,7 +1731,7 @@ func (s *Server) submitUpstreamAccessRequest(resourceURL, asURI, method string) 
 		log.Printf("httpapi: failed to build upstream access request for %s: %v", resourceURL, err)
 		return err
 	}
-	req.Header.Set("Authorization", "WebID "+base64.StdEncoding.EncodeToString([]byte(requestingParty)))
+	req.Header.Set("Authorization", "WebID "+url.QueryEscape(requestingParty))
 	req.Header.Set("Content-Type", "text/turtle")
 
 	status, responseBody, err := s.doAuthorizationServer(req)

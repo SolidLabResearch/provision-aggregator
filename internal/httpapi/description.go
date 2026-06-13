@@ -60,7 +60,6 @@ type AggregatorDescription struct {
 type aggregatorInstance struct {
 	ID          string
 	Subject     string
-	IDPIssuer   string
 	OwnerToken  string
 	CreatedAt   time.Time
 	TokenExpiry time.Time
@@ -118,6 +117,7 @@ type ServiceDescription struct {
 	SourceURLs      []string         `json:"source_urls"`
 	SourceMetadata  []SourceMetadata `json:"source_metadata,omitempty"`
 	Status          string           `json:"status"`
+	StatusDetail    string           `json:"statusDetail"`
 	CreatedAt       string           `json:"createdAt"`
 	ConformsTo      string           `json:"conformsTo"`
 	Applies         string           `json:"applies"`
@@ -137,6 +137,10 @@ type SourceMetadata struct {
 type Derivation struct {
 	Issuer               string `json:"issuer"`
 	DerivationResourceID string `json:"derivation_resource_id"`
+}
+
+func (d Derivation) hasData() bool {
+	return d.Issuer != "" && d.DerivationResourceID != ""
 }
 
 type ServiceDataset struct {
@@ -211,8 +215,9 @@ func BuildServiceDescription(cfg Config, svc serviceInstance) ServiceDescription
 				"@id":   "dcat:servesDataset",
 				"@type": "@id",
 			},
-			"status":    "aggr:status",
-			"createdAt": "aggr:createdAt",
+			"status":       "aggr:status",
+			"statusDetail": "aggr:statusDetail",
+			"createdAt":    "aggr:createdAt",
 			"conformsTo": map[string]string{
 				"@id":   "dct:conformsTo",
 				"@type": "@id",
@@ -256,6 +261,7 @@ func BuildServiceDescription(cfg Config, svc serviceInstance) ServiceDescription
 		SourceURLs:      append([]string(nil), svc.SourceURLs...),
 		SourceMetadata:  cloneSourceMetadata(svc.SourceMetadata),
 		Status:          svc.Status,
+		StatusDetail:    svc.ErrorMessage,
 		CreatedAt:       svc.CreatedAt.UTC().Format(time.RFC3339),
 		ConformsTo:      "https://w3id.org/aggregator#",
 		Applies:         instanceAppliedFunctionURL(cfg, svc.AggregatorID, svc),
