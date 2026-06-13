@@ -612,7 +612,8 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 		return
 	}
 
-	validRPT, err := s.outputRPTIsValid(bearerToken(r.Header.Get("Authorization")), svc.AASResourceID)
+	token := bearerToken(r.Header.Get("Authorization"))
+	validRPT, err := s.outputRPTIsValid(token, svc.AASResourceID)
 	if err != nil {
 		http.Error(w, "RPT validation failed: "+err.Error(), http.StatusBadGateway)
 		return
@@ -679,6 +680,26 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 			svc = existing
 		}
 		s.mu.Unlock()
+
+		if err == nil {
+			validRPT, err = s.outputRPTIsValid(token, svc.AASResourceID)
+			if err != nil {
+				http.Error(w, "RPT validation failed: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			if !validRPT {
+				ticket, err = s.requestOutputPermission(svc.AASResourceID)
+				if err != nil {
+					http.Error(w, "permission ticket request failed: "+err.Error(), http.StatusBadGateway)
+					return
+				}
+				if ticket != "" {
+					w.Header().Set("WWW-Authenticate", fmt.Sprintf(`UMA as_uri="%s", ticket="%s"`, s.cfg.authorizationServerURL(), ticket))
+					http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+					return
+				}
+			}
+		}
 	}
 	w.Header().Set("Link", "<"+serviceURL(s.cfg, aggID, serviceID)+">; rel=\"aggr:fromService\"")
 	w.Header().Set("Content-Type", svc.OutputMediaType)

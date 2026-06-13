@@ -730,6 +730,142 @@ func TestMilestone10OutputPermissionTicketComesFromAuthorizationServer(t *testin
 	}
 }
 
+func TestMilestone10RematerializedOutputReintrospectsRPTAfterASUpdate(t *testing.T) {
+	cfg := httpapi.DefaultConfig("https://aggregator.example")
+	cfg.AccountServerURL = "https://css.example"
+	cfg.AccountEmail = "my-email@example.com"
+	cfg.AccountPassword = "my-password"
+	cfg.AccountWebID = "https://pod.example/alice#me"
+	cfg.AuthorizationServerURL = "https://as.example/uma"
+
+	sourceETag := "v1"
+	sourceBody := `<https://example.test/source> <https://example.test/p> "v1" .`
+	cfg.SourceHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		resp := response(req, http.StatusOK, "application/n-triples", "", []byte(sourceBody))
+		resp.Header.Set("ETag", sourceETag)
+		return resp, nil
+	})}
+
+	serviceCollectionResourceID := "uma-https://aggregator.example/aggregators/agg-1/services"
+	var outputResourceID string
+	var outputResourceURL string
+	var outputIntrospections int
+	cfg.AccountHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host + req.URL.Path {
+		case "css.example/.account/":
+			return jsonResponse(req, map[string]any{"controls": map[string]any{
+				"password": map[string]string{"login": "https://css.example/.account/login"},
+				"account":  map[string]string{"clientCredentials": "https://css.example/.account/client-credentials"},
+			}}), nil
+		case "css.example/.account/login":
+			return jsonResponse(req, map[string]string{"authorization": "account-authorization"}), nil
+		case "css.example/.account/client-credentials":
+			return jsonResponse(req, map[string]string{"id": "css-client", "secret": "css-secret"}), nil
+		case "css.example/.well-known/openid-configuration":
+			return jsonResponse(req, map[string]string{"token_endpoint": "https://css.example/token"}), nil
+		case "css.example/token":
+			return jsonResponse(req, map[string]any{"access_token": "css-account-access-token", "expires_in": 3600}), nil
+		case "as.example/uma/.well-known/uma2-configuration":
+			return jsonResponse(req, map[string]string{
+				"issuer":                         "https://as.example/uma",
+				"token_endpoint":                 "https://as.example/uma/token",
+				"permission_endpoint":            "https://as.example/uma/permission",
+				"introspection_endpoint":         "https://as.example/uma/introspect",
+				"resource_registration_endpoint": "https://as.example/uma/resources",
+				"registration_endpoint":          "https://as.example/uma/register",
+			}), nil
+		case "as.example/uma/register":
+			return statusJSONResponse(req, http.StatusCreated, map[string]string{"client_id": "rs-client", "client_secret": "rs-secret"}), nil
+		case "as.example/uma/token":
+			return statusJSONResponse(req, http.StatusCreated, map[string]any{"access_token": "pat-token", "token_type": "Bearer", "expires_in": 3600}), nil
+		case "as.example/uma/resource-owner/assets":
+			return jsonResponse(req, map[string]any{"assets": []any{}}), nil
+		case "as.example/uma/resources":
+			var body map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode resource registration: %v", err)
+			}
+			resourceURL, _ := body["name"].(string)
+			resourceID := "uma-" + resourceURL
+			if strings.HasSuffix(resourceURL, "/output") {
+				outputResourceURL = resourceURL
+				outputResourceID = resourceID
+			}
+			return statusJSONResponse(req, http.StatusCreated, map[string]string{"_id": resourceID}), nil
+		case "as.example/uma/resources/" + outputResourceID:
+			if req.Method != http.MethodPut {
+				t.Fatalf("AAS output resource update method = %s, want PUT", req.Method)
+			}
+			return statusJSONResponse(req, http.StatusOK, map[string]string{"_id": outputResourceID}), nil
+		case "as.example/uma/permission":
+			var body []map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode permission request: %v", err)
+			}
+			scopes, _ := body[0]["resource_scopes"].([]any)
+			if body[0]["resource_id"] == serviceCollectionResourceID && len(scopes) == 1 && scopes[0] == "urn:example:css:modes:create" {
+				return statusJSONResponse(req, http.StatusCreated, map[string]string{"ticket": "create-ticket"}), nil
+			}
+			if body[0]["resource_id"] == outputResourceID && len(scopes) == 1 && scopes[0] == "urn:example:css:modes:read" {
+				return statusJSONResponse(req, http.StatusCreated, map[string]string{"ticket": "fresh-output-ticket"}), nil
+			}
+			t.Fatalf("permission request body = %#v", body)
+			return nil, nil
+		case "as.example/uma/introspect":
+			if err := req.ParseForm(); err != nil {
+				t.Fatalf("parse introspection form: %v", err)
+			}
+			switch req.Form.Get("token") {
+			case "create-rpt":
+				return jsonResponse(req, map[string]any{"active": true, "permissions": []map[string]any{{
+					"resource_id":     serviceCollectionResourceID,
+					"resource_scopes": []string{"urn:example:css:modes:create"},
+				}}}), nil
+			case "old-output-rpt":
+				outputIntrospections++
+				if outputIntrospections == 1 {
+					return jsonResponse(req, map[string]any{"active": true, "permissions": []map[string]any{{
+						"resource_id":     outputResourceID,
+						"resource_scopes": []string{"urn:example:css:modes:read"},
+					}}}), nil
+				}
+				return jsonResponse(req, map[string]any{"active": false}), nil
+			default:
+				t.Fatalf("introspection token = %q", req.Form.Get("token"))
+				return nil, nil
+			}
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	})}
+
+	server := httpapi.NewServer(cfg)
+	agg := provision(t, server)
+	createResponse := requestWithBearer(server, http.MethodPost, mustPath(agg.ServiceCollectionEndpoint), "application/json", []byte(serviceRequestWithSource("SELECT * WHERE { ?s ?p ?o }", "https://source.example/source.nt")), "create-rpt")
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("authorized service create status = %d, want 201; body: %s", createResponse.Code, createResponse.Body.String())
+	}
+	var desc httpapi.ServiceDescription
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &desc); err != nil {
+		t.Fatalf("decode service description: %v", err)
+	}
+	if outputResourceURL != desc.AASResourceID {
+		t.Fatalf("registered output resource = %q, want %q", outputResourceURL, desc.AASResourceID)
+	}
+
+	sourceETag = "v2"
+	sourceBody = `<https://example.test/source> <https://example.test/p> "v2" .`
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "old-output-rpt")
+	challenge := rec.Header().Get("WWW-Authenticate")
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(challenge, `ticket="fresh-output-ticket"`) {
+		t.Fatalf("rematerialized output status = %d challenge = %q, want fresh UMA ticket", rec.Code, challenge)
+	}
+	if outputIntrospections != 2 {
+		t.Fatalf("output introspections = %d, want initial and post-update checks", outputIntrospections)
+	}
+}
+
 func TestAGGRSEC004(t *testing.T) {
 	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
 	agg := provision(t, server)
