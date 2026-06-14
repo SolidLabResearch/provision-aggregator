@@ -8,11 +8,6 @@ import (
 	"strings"
 )
 
-const (
-	transformationQueryViewFragment = "QueryView"
-	transformationResultFragment    = "Result"
-)
-
 type ClientIdentifierDocument struct {
 	Context  []string `json:"@context"`
 	ClientID string   `json:"client_id"`
@@ -56,12 +51,10 @@ func BuildClientIdentifierDocument(cfg Config) ClientIdentifierDocument {
 
 func BuildTransformationCatalog(cfg Config) TransformationCatalog {
 	catalogURL := cfg.absolute(cfg.TransformationCatalogPath)
-	queryViewURL := catalogURL + "#" + transformationQueryViewFragment
-	sourceParameterURL := catalogURL + "#SourceParameter"
-	queryParameterURL := catalogURL + "#QueryParameter"
-	resultURL := catalogURL + "#" + transformationResultFragment
+	transformationURL := supportedTransformationURL(cfg)
+	sourceParameterURL := transformationSourceParameterURL(cfg)
+	resultURL := transformationOutputURL(cfg)
 	sourcePredicateURL := catalogURL + "#source"
-	queryPredicateURL := catalogURL + "#query"
 	resultPredicateURL := catalogURL + "#result"
 	required := true
 
@@ -71,37 +64,29 @@ func BuildTransformationCatalog(cfg Config) TransformationCatalog {
 			{
 				ID:                catalogURL,
 				Type:              "aggr:TransformationCatalog",
-				HasTransformation: queryViewURL,
+				HasTransformation: transformationURL,
 			},
 			{
-				ID:          queryViewURL,
+				ID:          transformationURL,
 				Type:        "fno:Function",
-				Label:       "SPARQL query transformation",
-				Description: "Materializes local RDF sources with a SPARQL CONSTRUCT or SELECT query.",
-				Comment:     "Materializes CONSTRUCT results as Turtle and SELECT results as SPARQL Results JSON.",
-				Expects:     []string{sourceParameterURL, queryParameterURL},
+				Label:       cfg.transformationLabel(),
+				Description: cfg.transformationDescription(),
+				Comment:     cfg.transformationComment(),
+				Expects:     []string{sourceParameterURL},
 				Returns:     []string{resultURL},
 			},
 			{
 				ID:        sourceParameterURL,
 				Type:      "fno:Parameter",
-				Label:     "RDF source document",
+				Label:     cfg.transformationSourceLabel(),
 				Predicate: sourcePredicateURL,
 				Required:  &required,
 				ValueType: "http://www.w3.org/ns/dcat#Dataset",
 			},
 			{
-				ID:        queryParameterURL,
-				Type:      "fno:Parameter",
-				Label:     "SPARQL query string",
-				Predicate: queryPredicateURL,
-				Required:  &required,
-				ValueType: "http://www.w3.org/2001/XMLSchema#string",
-			},
-			{
 				ID:        resultURL,
 				Type:      "fno:Output",
-				Label:     "Materialized query result",
+				Label:     cfg.transformationOutputLabel(),
 				Predicate: resultPredicateURL,
 				ValueType: "http://www.w3.org/ns/dcat#Dataset",
 			},
@@ -130,8 +115,7 @@ func BuildInstanceTransformationCatalog(cfg Config, aggID string, services []ser
 			Type:    "fno:AppliedFunction",
 			Applies: applied.Transformation,
 			ParameterBindings: []AppliedParameterBinding{
-				{BoundParameter: cfg.absolute(cfg.TransformationCatalogPath) + "#QueryParameter", BoundToTerm: applied.Query},
-				{BoundParameter: cfg.absolute(cfg.TransformationCatalogPath) + "#SourceParameter", BoundToTerm: strings.Join(applied.SourceURLs, " ")},
+				{BoundParameter: transformationSourceParameterURL(cfg), BoundToTerm: strings.Join(applied.SourceURLs, " ")},
 			},
 		})
 	}

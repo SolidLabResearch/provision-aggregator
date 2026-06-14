@@ -24,6 +24,19 @@ type Config struct {
 	AASIssuer                                       string
 	UASDerivationResourcesEndpoint                  string
 	DerivationResourceIDPrefix                      string
+	TransformationFragment                          string
+	TransformationLabel                             string
+	TransformationDescription                       string
+	TransformationComment                           string
+	TransformationSourceFragment                    string
+	TransformationSourceLabel                       string
+	TransformationOutputFragment                    string
+	TransformationOutputLabel                       string
+	MediaProfileIndexQuery                          string
+	MediaProfileQuery                               string
+	UpstreamDerivationResourceName                  string
+	MinimumAccessibleSources                        int
+	MinimumAccessibleSourceRatio                    float64
 	FailDerivedFromUpdate                           bool
 	OutputReadScope                                 string
 	ValidOutputRPTs                                 []string
@@ -42,23 +55,40 @@ type Config struct {
 
 func DefaultConfig(baseURL string) Config {
 	return Config{
-		BaseURL:                    strings.TrimRight(baseURL, "/"),
-		Version:                    "0.1.0",
-		ClientID:                   "aggregator-provision",
-		Subject:                    "https://aggregator.example/profile/card#me",
-		AASIssuer:                  "https://aas.example",
-		DerivationResourceIDPrefix: "derivation-resource",
-		OutputReadScope:            "read",
-		ValidOutputRPTs:            []string{"valid-output-rpt"},
-		UpstreamRPT:                "valid-upstream-rpt",
-		OxigraphBinary:             "oxigraph",
-		OxigraphWorkdir:            "./data/oxigraph-workspaces",
-		OutputsDirectory:           "./data/outputs",
-		ClientIdentifierPath:       "/client.jsonld",
-		ManagementEndpointPath:     "/registration",
-		TransformationCatalogPath:  "/transformations",
-		SupportedManagementFlows:   []string{"provision"},
-		SupportedManagementFormats: []string{"application/json"},
+		BaseURL:                      strings.TrimRight(baseURL, "/"),
+		Version:                      "0.1.0",
+		ClientID:                     "aggregator-provision",
+		Subject:                      "https://aggregator.example/profile/card#me",
+		AASIssuer:                    "https://aas.example",
+		DerivationResourceIDPrefix:   "derivation-resource",
+		TransformationFragment:       "MediaProfileAggregation",
+		TransformationLabel:          "Media Profile Aggregation",
+		TransformationDescription:    "Aggregates multiple media profiles and psuedomizes them and generates one aggreagted media profile.",
+		TransformationComment:        "Aggregates multiple media profiles and psuedomizes them and generates one aggreagted media profile.",
+		TransformationSourceFragment: "Source",
+		TransformationSourceLabel:    "Source",
+		TransformationOutputFragment: "MediaProfile",
+		TransformationOutputLabel:    "MediaProfile",
+		MediaProfileIndexQuery: `SELECT DISTINCT ?object WHERE {
+  ?subject <http://example.com/includes> ?object
+}`,
+		MediaProfileQuery: `SELECT * WHERE {
+  ?s ?p ?o .
+}`,
+		UpstreamDerivationResourceName: "Aggregator Media Profile",
+		MinimumAccessibleSources:       2,
+		MinimumAccessibleSourceRatio:   0.7,
+		OutputReadScope:                "read",
+		ValidOutputRPTs:                []string{"valid-output-rpt"},
+		UpstreamRPT:                    "valid-upstream-rpt",
+		OxigraphBinary:                 "oxigraph",
+		OxigraphWorkdir:                "./data/oxigraph-workspaces",
+		OutputsDirectory:               "./data/outputs",
+		ClientIdentifierPath:           "/client.jsonld",
+		ManagementEndpointPath:         "/registration",
+		TransformationCatalogPath:      "/transformations",
+		SupportedManagementFlows:       []string{"provision"},
+		SupportedManagementFormats:     []string{"application/json"},
 	}
 }
 
@@ -98,4 +128,73 @@ func (c Config) authorizationServerURL() string {
 		return strings.TrimRight(c.AuthorizationServerURL, "/")
 	}
 	return strings.TrimRight(c.AASIssuer, "/")
+}
+
+func (c Config) transformationFragment() string {
+	return defaultString(c.TransformationFragment, "MediaProfileAggregation")
+}
+
+func (c Config) transformationLabel() string {
+	return defaultString(c.TransformationLabel, "Media Profile Aggregation")
+}
+
+func (c Config) transformationDescription() string {
+	return defaultString(c.TransformationDescription, "Aggregates multiple media profiles and psuedomizes them and generates one aggreagted media profile.")
+}
+
+func (c Config) transformationComment() string {
+	return defaultString(c.TransformationComment, c.transformationDescription())
+}
+
+func (c Config) transformationSourceFragment() string {
+	return defaultString(c.TransformationSourceFragment, "Source")
+}
+
+func (c Config) transformationSourceLabel() string {
+	return defaultString(c.TransformationSourceLabel, "Source")
+}
+
+func (c Config) transformationOutputFragment() string {
+	return defaultString(c.TransformationOutputFragment, "MediaProfile")
+}
+
+func (c Config) transformationOutputLabel() string {
+	return defaultString(c.TransformationOutputLabel, "MediaProfile")
+}
+
+func (c Config) mediaProfileIndexQuery() string {
+	return defaultString(c.MediaProfileIndexQuery, `SELECT DISTINCT ?object WHERE {
+  ?subject <http://example.com/includes> ?object
+}`)
+}
+
+func (c Config) mediaProfileQuery() string {
+	return defaultString(c.MediaProfileQuery, `SELECT * WHERE {
+  ?s ?p ?o .
+}`)
+}
+
+func (c Config) upstreamDerivationResourceName() string {
+	return defaultString(c.UpstreamDerivationResourceName, "Aggregator Media Profile")
+}
+
+func (c Config) minimumAccessibleSources() int {
+	if c.MinimumAccessibleSources < 0 {
+		return 0
+	}
+	return c.MinimumAccessibleSources
+}
+
+func (c Config) minimumAccessibleSourceRatio() float64 {
+	if c.MinimumAccessibleSourceRatio < 0 {
+		return 0
+	}
+	return c.MinimumAccessibleSourceRatio
+}
+
+func defaultString(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
 }

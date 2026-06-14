@@ -1162,6 +1162,51 @@ func TestMilestone7RejectsNonRDFSource(t *testing.T) {
 	}
 }
 
+func TestOutputIsUnavailableWhenTooFewIndexedSourcesCanBeAccessed(t *testing.T) {
+	cfg := httpapi.DefaultConfig("https://aggregator.example")
+	server := httpapi.NewServer(cfg)
+	agg := provision(t, server)
+	indexURL := indexedProfiles(t, 1, 3)
+
+	rec := createServiceRawNoFail(t, server, agg.ServiceCollectionEndpoint, mediaProfileServiceRequest(indexURL))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("service create status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+	var desc httpapi.ServiceDescription
+	if err := json.Unmarshal(rec.Body.Bytes(), &desc); err != nil {
+		t.Fatalf("decode service description: %v", err)
+	}
+	if desc.Status != "failed" || desc.StatusDetail != "not enough upstream resources can be accessed" {
+		t.Fatalf("service status=%q statusDetail=%q, want failed threshold error", desc.Status, desc.StatusDetail)
+	}
+
+	output := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	if output.Code != http.StatusFailedDependency {
+		t.Fatalf("output status = %d, want 424; body: %s", output.Code, output.Body.String())
+	}
+}
+
+func TestIndexedSourceAvailabilityThresholdsAreConfigurable(t *testing.T) {
+	cfg := httpapi.DefaultConfig("https://aggregator.example")
+	cfg.MinimumAccessibleSources = 1
+	cfg.MinimumAccessibleSourceRatio = 0.3
+	server := httpapi.NewServer(cfg)
+	agg := provision(t, server)
+	indexURL := indexedProfiles(t, 1, 3)
+
+	desc := createService(t, server, agg.ServiceCollectionEndpoint, mediaProfileServiceRequest(indexURL))
+	if desc.Status != "ready" || desc.StatusDetail != "" {
+		t.Fatalf("service status=%q statusDetail=%q, want ready", desc.Status, desc.StatusDetail)
+	}
+	output := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	if output.Code != http.StatusOK {
+		t.Fatalf("output status = %d, want 200; body: %s", output.Code, output.Body.String())
+	}
+	if !strings.Contains(output.Body.String(), "available-1") {
+		t.Fatalf("output does not include accessible indexed source: %s", output.Body.String())
+	}
+}
+
 func TestMilestone8ServiceCreationUpdatesAASDerivedFrom(t *testing.T) {
 	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
 	agg := provision(t, server)
@@ -1325,6 +1370,39 @@ func serviceRequest(t *testing.T, query string) string {
 
 func serviceRequestWithSource(query, sourceURL string) string {
 	return fmt.Sprintf(`{"transformation":"https://aggregator.example/transformations#QueryView","query":%q,"source_urls":[%q]}`, query, sourceURL)
+}
+
+func mediaProfileServiceRequest(sourceURL string) string {
+	return fmt.Sprintf(`{"source_urls":[%q]}`, sourceURL)
+}
+
+func indexedProfiles(t *testing.T, accessible, total int) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	profileURLs := make([]string, 0, total)
+	for i := 1; i <= total; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("profile-%d.nt", i))
+		profileURL := url.URL{Scheme: "file", Path: path}
+		profileURLs = append(profileURLs, profileURL.String())
+		if i <= accessible {
+			body := fmt.Sprintf(`<https://example.test/available-%d> <https://example.test/p> "profile %d" .`, i, i)
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatalf("write profile fixture: %v", err)
+			}
+		}
+	}
+
+	indexPath := filepath.Join(dir, "index.nt")
+	var index strings.Builder
+	for _, profileURL := range profileURLs {
+		index.WriteString(fmt.Sprintf("<https://example.test/index> <http://example.com/includes> <%s> .\n", profileURL))
+	}
+	if err := os.WriteFile(indexPath, []byte(index.String()), 0o644); err != nil {
+		t.Fatalf("write index fixture: %v", err)
+	}
+	indexURL := url.URL{Scheme: "file", Path: indexPath}
+	return indexURL.String()
 }
 
 func turtleServiceRequest(t *testing.T, query string) string {

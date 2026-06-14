@@ -115,6 +115,7 @@ type outputAsset struct {
 	ServiceURL            string
 	DerivedFrom           []Derivation
 	UpstreamDerivation    upstreamDerivationEvidence
+	UpstreamDerivations   []upstreamDerivationEvidence
 	PreviousTokensExpired bool
 }
 
@@ -193,6 +194,15 @@ func upstreamDerivationEvidenceFrom(issuer string, token upstreamTokenResponse) 
 		evidence.ManagementAccessTokenType = token.ManagementAccessToken.TokenType
 	}
 	return evidence
+}
+
+func cloneUpstreamDerivations(derivations []upstreamDerivationEvidence) []upstreamDerivationEvidence {
+	if len(derivations) == 0 {
+		return nil
+	}
+	cloned := make([]upstreamDerivationEvidence, len(derivations))
+	copy(cloned, derivations)
+	return cloned
 }
 
 func (s *Server) Routes() http.Handler {
@@ -504,8 +514,10 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	req.Transformation = defaultString(req.Transformation, supportedTransformationURL(s.cfg))
+	req.Query = s.cfg.mediaProfileQuery()
 	queryType, err := validateQuery(req.Query)
-	if req.Transformation != supportedTransformationURL(s.cfg) || req.Query == "" || err != nil || len(req.SourceURLs) == 0 {
+	if req.Transformation != supportedTransformationURL(s.cfg) || err != nil || len(req.SourceURLs) == 0 {
 		http.Error(w, "invalid service request", http.StatusBadRequest)
 		return
 	}
@@ -513,6 +525,23 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 	serviceID := s.reserveServiceID()
 	output, err := s.materialize(serviceID, req, queryType)
 	if err != nil {
+		if isInsufficientUpstreamResources(err) {
+			output = materializedOutput{MediaType: outputMediaTypeForQueryType(queryType)}
+			if err := s.registerServiceResource(aggID, serviceID); err != nil {
+				http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			asset, err := s.registerOutputAsset(aggID, serviceID, output)
+			if err != nil {
+				http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			svc := s.createService(aggID, serviceID, req, queryType, output, asset, "failed", insufficientUpstreamResourcesMessage, nil)
+			desc := BuildServiceDescription(s.cfg, svc)
+			w.Header().Set("Location", desc.ID)
+			writeJSONLD(w, http.StatusCreated, desc)
+			return
+		}
 		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "oxigraph") {
 			status = http.StatusInternalServerError
@@ -530,15 +559,12 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 		http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	derivation, err := s.updateOutputAssetDerivedFrom(asset.ResourceID, serviceID, output)
+	derivedFrom, err := s.updateOutputAssetDerivedFrom(asset.ResourceID, serviceID, output)
 	status := "ready"
 	errorMessage := ""
-	var derivedFrom []Derivation
 	if err != nil {
 		status = "failed"
 		errorMessage = err.Error()
-	} else if derivation.hasData() {
-		derivedFrom = []Derivation{derivation}
 	}
 
 	svc := s.createService(aggID, serviceID, req, queryType, output, asset, status, errorMessage, derivedFrom)
@@ -634,6 +660,10 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
+	if svc.Status == "failed" && svc.ErrorMessage == insufficientUpstreamResourcesMessage {
+		http.Error(w, insufficientUpstreamResourcesMessage, http.StatusFailedDependency)
+		return
+	}
 	needsMaterialization, err := s.serviceNeedsMaterialization(svc)
 	if err != nil {
 		http.Error(w, "source validation failed: "+err.Error(), http.StatusBadGateway)
@@ -647,6 +677,11 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 		}
 		output, err := s.materialize(serviceID, req, svc.QueryType)
 		if err != nil {
+			if isInsufficientUpstreamResources(err) {
+				s.markServiceFailed(aggID, serviceID, insufficientUpstreamResourcesMessage)
+				http.Error(w, insufficientUpstreamResourcesMessage, http.StatusFailedDependency)
+				return
+			}
 			status := http.StatusBadRequest
 			if strings.Contains(err.Error(), "oxigraph") {
 				status = http.StatusInternalServerError
@@ -655,13 +690,10 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 			return
 		}
 
-		derivation, err := s.updateOutputAssetDerivedFrom(svc.AASResourceID, serviceID, output)
+		derivedFrom, err := s.updateOutputAssetDerivedFrom(svc.AASResourceID, serviceID, output)
 		status := "ready"
 		errorMessage := ""
-		var derivedFrom []Derivation
-		if err == nil && derivation.hasData() {
-			derivedFrom = []Derivation{derivation}
-		} else if err != nil {
+		if err != nil {
 			status = "failed"
 			errorMessage = err.Error()
 		}
@@ -673,6 +705,7 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 			existing.OutputPath = output.Path
 			existing.DerivedFrom = cloneDerivations(derivedFrom)
 			existing.UpstreamDerivation = output.UpstreamDerivation
+			existing.UpstreamDerivations = cloneUpstreamDerivations(output.UpstreamDerivations)
 			existing.Status = status
 			existing.ErrorMessage = errorMessage
 			s.services[aggID][serviceID] = existing
@@ -730,6 +763,19 @@ func (s *Server) service(aggID, serviceID string) (serviceInstance, bool) {
 	return svc, ok
 }
 
+func (s *Server) markServiceFailed(aggID, serviceID, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if existing, exists := s.services[aggID][serviceID]; exists {
+		existing.Status = "failed"
+		existing.ErrorMessage = message
+		existing.OutputPath = ""
+		s.services[aggID][serviceID] = existing
+		s.serviceRevisions[aggID]++
+	}
+}
+
 func (s *Server) deleteService(aggID string, svc serviceInstance) error {
 	if svc.OutputPath != "" {
 		if err := os.Remove(svc.OutputPath); err != nil && !os.IsNotExist(err) {
@@ -763,22 +809,23 @@ func (s *Server) createService(aggID string, serviceID string, req createService
 	defer s.mu.Unlock()
 
 	svc := serviceInstance{
-		ID:                 serviceID,
-		AggregatorID:       aggID,
-		Transformation:     req.Transformation,
-		Query:              req.Query,
-		QueryType:          queryType,
-		SourceURLs:         append([]string(nil), req.SourceURLs...),
-		SourceMetadata:     cloneSourceMetadata(output.Sources),
-		Status:             status,
-		OutputMediaType:    output.MediaType,
-		OutputPath:         output.Path,
-		AASIssuer:          s.cfg.authorizationServerURL(),
-		AASResourceID:      asset.ResourceID,
-		DerivedFrom:        cloneDerivations(derivedFrom),
-		UpstreamDerivation: output.UpstreamDerivation,
-		ErrorMessage:       errorMessage,
-		CreatedAt:          s.now().UTC(),
+		ID:                  serviceID,
+		AggregatorID:        aggID,
+		Transformation:      req.Transformation,
+		Query:               req.Query,
+		QueryType:           queryType,
+		SourceURLs:          append([]string(nil), req.SourceURLs...),
+		SourceMetadata:      cloneSourceMetadata(output.Sources),
+		Status:              status,
+		OutputMediaType:     output.MediaType,
+		OutputPath:          output.Path,
+		AASIssuer:           s.cfg.authorizationServerURL(),
+		AASResourceID:       asset.ResourceID,
+		DerivedFrom:         cloneDerivations(derivedFrom),
+		UpstreamDerivation:  output.UpstreamDerivation,
+		UpstreamDerivations: cloneUpstreamDerivations(output.UpstreamDerivations),
+		ErrorMessage:        errorMessage,
+		CreatedAt:           s.now().UTC(),
 	}
 	s.services[aggID][serviceID] = svc
 	s.serviceRevisions[aggID]++
@@ -792,7 +839,15 @@ func (s *Server) serviceCollectionETag(aggID string) string {
 }
 
 func supportedTransformationURL(cfg Config) string {
-	return cfg.absolute(cfg.TransformationCatalogPath) + "#" + transformationQueryViewFragment
+	return cfg.absolute(cfg.TransformationCatalogPath) + "#" + cfg.transformationFragment()
+}
+
+func transformationSourceParameterURL(cfg Config) string {
+	return cfg.absolute(cfg.TransformationCatalogPath) + "#" + cfg.transformationSourceFragment()
+}
+
+func transformationOutputURL(cfg Config) string {
+	return cfg.absolute(cfg.TransformationCatalogPath) + "#" + cfg.transformationOutputFragment()
 }
 
 func (s *Server) registerAggregatorResourcesLocked(agg aggregatorInstance) {
@@ -833,11 +888,12 @@ func (s *Server) registerResourceLocked(resourceURL string, scopes []string, kin
 func (s *Server) registerOutputAsset(aggID, serviceID string, output materializedOutput) (outputAsset, error) {
 	outputURL := serviceURL(s.cfg, aggID, serviceID) + "/output"
 	asset := outputAsset{
-		ResourceID:         outputURL,
-		Scopes:             []string{s.cfg.OutputReadScope},
-		OutputPath:         output.Path,
-		ServiceURL:         serviceURL(s.cfg, aggID, serviceID),
-		UpstreamDerivation: output.UpstreamDerivation,
+		ResourceID:          outputURL,
+		Scopes:              []string{s.cfg.OutputReadScope},
+		OutputPath:          output.Path,
+		ServiceURL:          serviceURL(s.cfg, aggID, serviceID),
+		UpstreamDerivation:  output.UpstreamDerivation,
+		UpstreamDerivations: cloneUpstreamDerivations(output.UpstreamDerivations),
 	}
 
 	s.mu.Lock()
@@ -864,42 +920,42 @@ func (s *Server) registerServiceResource(aggID, serviceID string) error {
 	return nil
 }
 
-func (s *Server) updateOutputAssetDerivedFrom(resourceID, serviceID string, output materializedOutput) (Derivation, error) {
-	derivation := Derivation{
-		Issuer:               output.UpstreamDerivation.Issuer,
-		DerivationResourceID: s.cfg.DerivationResourceIDPrefix + "-" + serviceID,
-	}
-	managementAccessToken := s.accountAccessToken
-	managementAccessTokenType := "Bearer"
-	if output.UpstreamDerivation.hasData() {
-		if output.UpstreamDerivation.Issuer != "" {
-			derivation.Issuer = output.UpstreamDerivation.Issuer
-		}
-		if output.UpstreamDerivation.DerivationResourceID != "" {
-			derivation.DerivationResourceID = output.UpstreamDerivation.DerivationResourceID
-		}
-		if output.UpstreamDerivation.ManagementAccessToken != "" {
-			managementAccessToken = output.UpstreamDerivation.ManagementAccessToken
-		}
-		if output.UpstreamDerivation.ManagementAccessTokenType != "" {
-			managementAccessTokenType = output.UpstreamDerivation.ManagementAccessTokenType
-		}
-	}
+func (s *Server) updateOutputAssetDerivedFrom(resourceID, serviceID string, output materializedOutput) ([]Derivation, error) {
 	if s.cfg.FailDerivedFromUpdate {
-		return derivation, fmt.Errorf("AAS derived_from update failed")
+		return nil, fmt.Errorf("AAS derived_from update failed")
 	}
 	scopes := []string{knowsScopeForLocalMode(s.cfg.OutputReadScope)}
-	if derivation.Issuer != "" {
-		if err := s.updateUASDerivationResource(derivation.DerivationResourceID, derivation.Issuer, resourceID, serviceID, scopes, managementAccessToken, managementAccessTokenType); err != nil {
-			return derivation, err
+	derivedFrom := make([]Derivation, 0, len(output.UpstreamDerivations))
+	for i, upstreamDerivation := range output.UpstreamDerivations {
+		if !upstreamDerivation.hasData() {
+			continue
+		}
+		derivation := Derivation{
+			Issuer:               upstreamDerivation.Issuer,
+			DerivationResourceID: upstreamDerivation.DerivationResourceID,
+		}
+		if derivation.DerivationResourceID == "" {
+			derivation.DerivationResourceID = fmt.Sprintf("%s-%s-%d", s.cfg.DerivationResourceIDPrefix, serviceID, i+1)
+		}
+		managementAccessToken := s.accountAccessToken
+		managementAccessTokenType := "Bearer"
+		if upstreamDerivation.ManagementAccessToken != "" {
+			managementAccessToken = upstreamDerivation.ManagementAccessToken
+		}
+		if upstreamDerivation.ManagementAccessTokenType != "" {
+			managementAccessTokenType = upstreamDerivation.ManagementAccessTokenType
+		}
+		if derivation.Issuer != "" {
+			if err := s.updateUASDerivationResource(derivation.DerivationResourceID, derivation.Issuer, resourceID, serviceID, scopes, managementAccessToken, managementAccessTokenType); err != nil {
+				return derivedFrom, err
+			}
+		}
+		if derivation.hasData() {
+			derivedFrom = append(derivedFrom, derivation)
 		}
 	}
-	derivedFrom := []Derivation(nil)
-	if derivation.Issuer != "" && derivation.DerivationResourceID != "" {
-		derivedFrom = []Derivation{derivation}
-	}
 	if err := s.updateConfiguredAuthorizationResource(resourceID, []string{scopeForLocalMode(s.cfg.OutputReadScope)}, "service_output", derivedFrom); err != nil {
-		return derivation, err
+		return derivedFrom, err
 	}
 
 	s.mu.Lock()
@@ -908,6 +964,7 @@ func (s *Server) updateOutputAssetDerivedFrom(resourceID, serviceID string, outp
 	asset := s.outputAssets[resourceID]
 	asset.DerivedFrom = cloneDerivations(derivedFrom)
 	asset.UpstreamDerivation = output.UpstreamDerivation
+	asset.UpstreamDerivations = cloneUpstreamDerivations(output.UpstreamDerivations)
 	asset.PreviousTokensExpired = true
 	s.outputAssets[resourceID] = asset
 	s.derivedUpdates = append(s.derivedUpdates, DerivedFromUpdateEvidence{
@@ -915,7 +972,7 @@ func (s *Server) updateOutputAssetDerivedFrom(resourceID, serviceID string, outp
 		DerivedFrom:           cloneDerivations(asset.DerivedFrom),
 		PreviousTokensExpired: asset.PreviousTokensExpired,
 	})
-	return derivation, nil
+	return derivedFrom, nil
 }
 
 func (s *Server) cleanupServiceAssets(svc serviceInstance) {
@@ -941,7 +998,7 @@ func (s *Server) cleanupServiceAssets(svc serviceInstance) {
 	deletedDerivationIDs := make([]string, 0, len(removed))
 	for _, derivation := range removed {
 		if derivation.DerivationResourceID != "" {
-			_ = s.deleteUASDerivationResource(derivation.DerivationResourceID, upstreamDerivation)
+			_ = s.deleteUASDerivationResource(derivation.DerivationResourceID, upstreamDerivationForID(derivation.DerivationResourceID, asset.UpstreamDerivations, svc.UpstreamDerivations, upstreamDerivation))
 			deletedDerivationIDs = append(deletedDerivationIDs, derivation.DerivationResourceID)
 		}
 	}
@@ -987,7 +1044,7 @@ func (s *Server) updateUASDerivationResource(derivationResourceID, derivationIss
 	}
 
 	body, err := json.Marshal(derivationResourceDescriptionDocument{
-		Name:           "Derived resource",
+		Name:           s.cfg.upstreamDerivationResourceName(),
 		ResourceScopes: append([]string(nil), scopes...),
 	})
 	if err != nil {
@@ -1085,6 +1142,20 @@ func (s *Server) uasAuthorizationServerMetadata(issuer string) (oidcConfiguratio
 
 func svcUpstreamDerivation(svc serviceInstance) upstreamDerivationEvidence {
 	return svc.UpstreamDerivation
+}
+
+func upstreamDerivationForID(derivationResourceID string, assetDerivations, serviceDerivations []upstreamDerivationEvidence, fallback upstreamDerivationEvidence) upstreamDerivationEvidence {
+	for _, derivation := range assetDerivations {
+		if derivation.DerivationResourceID == derivationResourceID {
+			return derivation
+		}
+	}
+	for _, derivation := range serviceDerivations {
+		if derivation.DerivationResourceID == derivationResourceID {
+			return derivation
+		}
+	}
+	return fallback
 }
 
 func (s *Server) Shutdown() error {
@@ -1333,10 +1404,11 @@ func validateQuery(query string) (string, error) {
 }
 
 type materializedOutput struct {
-	MediaType          string
-	Path               string
-	Sources            []SourceMetadata
-	UpstreamDerivation upstreamDerivationEvidence
+	MediaType           string
+	Path                string
+	Sources             []SourceMetadata
+	UpstreamDerivation  upstreamDerivationEvidence
+	UpstreamDerivations []upstreamDerivationEvidence
 }
 
 type stagedSource struct {
@@ -1356,8 +1428,35 @@ type sourceHTTPResult struct {
 	UpstreamDerivation  upstreamDerivationEvidence
 }
 
+type sparqlResultsJSON struct {
+	Results struct {
+		Bindings []map[string]sparqlBinding `json:"bindings"`
+	} `json:"results"`
+}
+
+type sparqlBinding struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
 type inaccessibleSourceError struct {
 	err error
+}
+
+const insufficientUpstreamResourcesMessage = "not enough upstream resources can be accessed"
+
+type insufficientUpstreamResourcesError struct {
+	Accessible int
+	Total      int
+}
+
+func (e insufficientUpstreamResourcesError) Error() string {
+	return insufficientUpstreamResourcesMessage
+}
+
+func isInsufficientUpstreamResources(err error) bool {
+	var insufficient insufficientUpstreamResourcesError
+	return errors.As(err, &insufficient)
 }
 
 func (e inaccessibleSourceError) Error() string {
@@ -1388,26 +1487,61 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	}
 
 	var sources []SourceMetadata
-	var upstreamDerivation upstreamDerivationEvidence
+	var upstreamDerivations []upstreamDerivationEvidence
 	var lastSourceErr error
 	for i, sourceURL := range req.SourceURLs {
 		source, err := s.stageSource(stagingDir, i, sourceURL)
 		if err != nil {
-			log.Printf("httpapi: failed to stage source %s: %v", sourceURL, err)
+			log.Printf("httpapi: failed to stage index source %s: %v", sourceURL, err)
+			lastSourceErr = err
 			continue
 		}
 		sources = append(sources, source.Metadata)
-		if !upstreamDerivation.hasData() && source.UpstreamDerivation.hasData() {
-			upstreamDerivation = source.UpstreamDerivation
-		}
-		args := []string{"load", "--location", storeDir, "--file", source.Path}
-		if source.Format != "" {
-			args = append(args, "--format", source.Format)
-		}
-		if err := runOxigraph(s.cfg.OxigraphBinary, args...); err != nil {
-			log.Printf("httpapi: failed to load source %s into oxigraph: %v", sourceURL, err)
+		if err := loadStagedSource(s.cfg.OxigraphBinary, storeDir, source); err != nil {
+			log.Printf("httpapi: failed to load index source %s into oxigraph: %v", sourceURL, err)
 			lastSourceErr = err
 			continue
+		}
+	}
+
+	profileURLs, err := s.queryMediaProfileIndex(storeDir, outputDir)
+	if err != nil {
+		if lastSourceErr != nil {
+			return materializedOutput{}, lastSourceErr
+		}
+		return materializedOutput{}, err
+	}
+
+	accessibleProfileSources := 0
+	if len(profileURLs) > 0 {
+		if err := os.RemoveAll(storeDir); err != nil {
+			return materializedOutput{}, err
+		}
+
+		for i, sourceURL := range profileURLs {
+			source, err := s.stageSource(stagingDir, len(req.SourceURLs)+i, sourceURL)
+			if err != nil {
+				log.Printf("httpapi: failed to stage media profile source %s: %v", sourceURL, err)
+				lastSourceErr = err
+				continue
+			}
+			sources = append(sources, source.Metadata)
+			if source.UpstreamDerivation.hasData() {
+				upstreamDerivations = appendUniqueUpstreamDerivation(upstreamDerivations, source.UpstreamDerivation)
+			}
+			if err := loadStagedSource(s.cfg.OxigraphBinary, storeDir, source); err != nil {
+				log.Printf("httpapi: failed to load media profile source %s into oxigraph: %v", sourceURL, err)
+				lastSourceErr = err
+				continue
+			}
+			accessibleProfileSources++
+		}
+	}
+
+	if !s.hasEnoughAccessibleProfileSources(accessibleProfileSources, len(profileURLs)) {
+		return materializedOutput{}, insufficientUpstreamResourcesError{
+			Accessible: accessibleProfileSources,
+			Total:      len(profileURLs),
 		}
 	}
 
@@ -1435,7 +1569,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		if err := os.WriteFile(outputPath, []byte(""), 0o644); err != nil {
 			return materializedOutput{}, err
 		}
-		return materializedOutput{MediaType: mediaType, Path: outputPath, Sources: sources, UpstreamDerivation: upstreamDerivation}, nil
+		return materializedOutputFromSources(mediaType, outputPath, sources, upstreamDerivations), nil
 	}
 
 	outputPath := filepath.Join(outputDir, outputName)
@@ -1449,7 +1583,89 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	); err != nil {
 		return materializedOutput{}, err
 	}
-	return materializedOutput{MediaType: mediaType, Path: outputPath, Sources: sources, UpstreamDerivation: upstreamDerivation}, nil
+	return materializedOutputFromSources(mediaType, outputPath, sources, upstreamDerivations), nil
+}
+
+func (s *Server) hasEnoughAccessibleProfileSources(accessible, total int) bool {
+	if total == 0 {
+		return true
+	}
+	return accessible >= s.cfg.minimumAccessibleSources() && float64(accessible)/float64(total) >= s.cfg.minimumAccessibleSourceRatio()
+}
+
+func outputMediaTypeForQueryType(queryType string) string {
+	switch queryType {
+	case "CONSTRUCT":
+		return "text/turtle"
+	case "SELECT":
+		return "application/sparql-results+json"
+	default:
+		return ""
+	}
+}
+
+func loadStagedSource(binary, storeDir string, source stagedSource) error {
+	args := []string{"load", "--location", storeDir, "--file", source.Path}
+	if source.Format != "" {
+		args = append(args, "--format", source.Format)
+	}
+	return runOxigraph(binary, args...)
+}
+
+func materializedOutputFromSources(mediaType, outputPath string, sources []SourceMetadata, upstreamDerivations []upstreamDerivationEvidence) materializedOutput {
+	output := materializedOutput{
+		MediaType:           mediaType,
+		Path:                outputPath,
+		Sources:             sources,
+		UpstreamDerivations: upstreamDerivations,
+	}
+	if len(upstreamDerivations) > 0 {
+		output.UpstreamDerivation = upstreamDerivations[0]
+	}
+	return output
+}
+
+func (s *Server) queryMediaProfileIndex(storeDir, outputDir string) ([]string, error) {
+	resultsPath := filepath.Join(outputDir, "media-profile-index.srj")
+	if err := runOxigraph(
+		s.cfg.OxigraphBinary,
+		"query",
+		"--location", storeDir,
+		"--query", s.cfg.mediaProfileIndexQuery(),
+		"--results-file", resultsPath,
+		"--results-format", "json",
+	); err != nil {
+		return nil, err
+	}
+	body, err := os.ReadFile(resultsPath)
+	if err != nil {
+		return nil, err
+	}
+	var results sparqlResultsJSON
+	if err := json.Unmarshal(body, &results); err != nil {
+		return nil, fmt.Errorf("decode media profile index query results: %w", err)
+	}
+	seen := map[string]bool{}
+	var urls []string
+	for _, row := range results.Results.Bindings {
+		for _, binding := range row {
+			if binding.Value == "" || binding.Type != "uri" || seen[binding.Value] {
+				continue
+			}
+			seen[binding.Value] = true
+			urls = append(urls, binding.Value)
+		}
+	}
+	return urls, nil
+}
+
+func appendUniqueUpstreamDerivation(derivations []upstreamDerivationEvidence, derivation upstreamDerivationEvidence) []upstreamDerivationEvidence {
+	for _, existing := range derivations {
+		if existing.Issuer == derivation.Issuer && existing.DerivationResourceID == derivation.DerivationResourceID {
+			return derivations
+		}
+	}
+	return append(derivations, derivation)
 }
 
 func (s *Server) stageSource(stagingDir string, index int, rawURL string) (stagedSource, error) {
@@ -1558,26 +1774,25 @@ func (s *Server) serviceNeedsMaterialization(svc serviceInstance) (bool, error) 
 		}
 		return false, err
 	}
-	if len(svc.SourceMetadata) != len(svc.SourceURLs) {
+	if len(svc.SourceMetadata) == 0 {
 		return true, nil
 	}
-	metadataByURL := make(map[string]SourceMetadata, len(svc.SourceMetadata))
+	sourceURLSeen := make(map[string]bool, len(svc.SourceMetadata))
 	for _, metadata := range svc.SourceMetadata {
-		metadataByURL[metadata.URL] = metadata
-	}
-	for _, sourceURL := range svc.SourceURLs {
-		metadata, ok := metadataByURL[sourceURL]
-		if !ok {
-			return true, nil
-		}
+		sourceURLSeen[metadata.URL] = true
 		if metadata.ETag == "" {
 			continue
 		}
-		currentETag, err := s.currentHTTPSourceETag(sourceURL, metadata)
+		currentETag, err := s.currentHTTPSourceETag(metadata.URL, metadata)
 		if err != nil {
 			return false, err
 		}
 		if currentETag == "" || currentETag != metadata.ETag {
+			return true, nil
+		}
+	}
+	for _, sourceURL := range svc.SourceURLs {
+		if !sourceURLSeen[sourceURL] {
 			return true, nil
 		}
 	}

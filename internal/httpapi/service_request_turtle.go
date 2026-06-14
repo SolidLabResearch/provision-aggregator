@@ -109,13 +109,14 @@ func serviceRequestFromTriples(cfg Config, triples []turtleTriple) (createServic
 		switch parameter {
 		case cfg.absolute(cfg.TransformationCatalogPath) + "#QueryParameter", cfg.absolute(cfg.TransformationCatalogPath) + "#Query":
 			req.Query = value
-		case cfg.absolute(cfg.TransformationCatalogPath) + "#SourceParameter", cfg.absolute(cfg.TransformationCatalogPath) + "#Sources", cfg.absolute(cfg.TransformationCatalogPath) + "#Source":
+		case transformationSourceParameterURL(cfg), cfg.absolute(cfg.TransformationCatalogPath) + "#SourceParameter", cfg.absolute(cfg.TransformationCatalogPath) + "#Sources", cfg.absolute(cfg.TransformationCatalogPath) + "#Source":
 			req.SourceURLs = append(req.SourceURLs, value)
 		}
 	}
-	if req.Query == "" || len(req.SourceURLs) == 0 {
-		return createServiceRequest{}, fmt.Errorf("applied function is missing required query or source bindings")
+	if len(req.SourceURLs) == 0 {
+		return createServiceRequest{}, fmt.Errorf("applied function is missing required source binding")
 	}
+	req.Query = cfg.mediaProfileQuery()
 	return req, nil
 }
 

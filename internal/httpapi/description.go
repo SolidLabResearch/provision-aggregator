@@ -160,22 +160,23 @@ type ServiceDistribution struct {
 }
 
 type serviceInstance struct {
-	ID                 string
-	AggregatorID       string
-	Transformation     string
-	Query              string
-	QueryType          string
-	SourceURLs         []string
-	SourceMetadata     []SourceMetadata
-	Status             string
-	OutputMediaType    string
-	OutputPath         string
-	AASIssuer          string
-	AASResourceID      string
-	DerivedFrom        []Derivation
-	UpstreamDerivation upstreamDerivationEvidence
-	ErrorMessage       string
-	CreatedAt          time.Time
+	ID                  string
+	AggregatorID        string
+	Transformation      string
+	Query               string
+	QueryType           string
+	SourceURLs          []string
+	SourceMetadata      []SourceMetadata
+	Status              string
+	OutputMediaType     string
+	OutputPath          string
+	AASIssuer           string
+	AASResourceID       string
+	DerivedFrom         []Derivation
+	UpstreamDerivation  upstreamDerivationEvidence
+	UpstreamDerivations []upstreamDerivationEvidence
+	ErrorMessage        string
+	CreatedAt           time.Time
 }
 
 func BuildServiceCollection(cfg Config, aggID string, services []serviceInstance) ServiceCollection {
@@ -268,7 +269,7 @@ func BuildServiceDescription(cfg Config, svc serviceInstance) ServiceDescription
 		Dataset: ServiceDataset{
 			ID:        datasetURL,
 			Type:      "dcat:Dataset",
-			ForOutput: cfg.absolute(cfg.TransformationCatalogPath) + "#" + transformationResultFragment,
+			ForOutput: transformationOutputURL(cfg),
 			Distribution: ServiceDistribution{
 				ID:            distributionURL,
 				Type:          "dcat:Distribution",

@@ -24,6 +24,19 @@ type fileConfig struct {
 	AASIssuer                                       *string  `json:"aas_issuer"`
 	UASDerivationResourcesEndpoint                  *string  `json:"uas_derivation_resources_endpoint"`
 	DerivationResourceIDPrefix                      *string  `json:"derivation_resource_id_prefix"`
+	TransformationFragment                          *string  `json:"transformation_fragment"`
+	TransformationLabel                             *string  `json:"transformation_label"`
+	TransformationDescription                       *string  `json:"transformation_description"`
+	TransformationComment                           *string  `json:"transformation_comment"`
+	TransformationSourceFragment                    *string  `json:"transformation_source_fragment"`
+	TransformationSourceLabel                       *string  `json:"transformation_source_label"`
+	TransformationOutputFragment                    *string  `json:"transformation_output_fragment"`
+	TransformationOutputLabel                       *string  `json:"transformation_output_label"`
+	MediaProfileIndexQuery                          *string  `json:"media_profile_index_query"`
+	MediaProfileQuery                               *string  `json:"media_profile_query"`
+	UpstreamDerivationResourceName                  *string  `json:"upstream_derivation_resource_name"`
+	MinimumAccessibleSources                        *int     `json:"minimum_accessible_sources"`
+	MinimumAccessibleSourceRatio                    *float64 `json:"minimum_accessible_source_ratio"`
 	OutputReadScope                                 *string  `json:"output_read_scope"`
 	ValidOutputRPTs                                 []string `json:"valid_output_rpts"`
 	UpstreamRPT                                     *string  `json:"upstream_rpt"`
@@ -71,6 +84,19 @@ func applyConfigFile(body []byte, cfg Config) (Config, error) {
 	setString(file.AASIssuer, &cfg.AASIssuer)
 	setString(file.UASDerivationResourcesEndpoint, &cfg.UASDerivationResourcesEndpoint)
 	setString(file.DerivationResourceIDPrefix, &cfg.DerivationResourceIDPrefix)
+	setString(file.TransformationFragment, &cfg.TransformationFragment)
+	setString(file.TransformationLabel, &cfg.TransformationLabel)
+	setString(file.TransformationDescription, &cfg.TransformationDescription)
+	setString(file.TransformationComment, &cfg.TransformationComment)
+	setString(file.TransformationSourceFragment, &cfg.TransformationSourceFragment)
+	setString(file.TransformationSourceLabel, &cfg.TransformationSourceLabel)
+	setString(file.TransformationOutputFragment, &cfg.TransformationOutputFragment)
+	setString(file.TransformationOutputLabel, &cfg.TransformationOutputLabel)
+	setString(file.MediaProfileIndexQuery, &cfg.MediaProfileIndexQuery)
+	setString(file.MediaProfileQuery, &cfg.MediaProfileQuery)
+	setString(file.UpstreamDerivationResourceName, &cfg.UpstreamDerivationResourceName)
+	setInt(file.MinimumAccessibleSources, &cfg.MinimumAccessibleSources)
+	setFloat64(file.MinimumAccessibleSourceRatio, &cfg.MinimumAccessibleSourceRatio)
 	setString(file.OutputReadScope, &cfg.OutputReadScope)
 	setString(file.UpstreamRPT, &cfg.UpstreamRPT)
 	setString(file.OxigraphBinary, &cfg.OxigraphBinary)
@@ -93,6 +119,18 @@ func applyConfigFile(body []byte, cfg Config) (Config, error) {
 }
 
 func setString(value *string, target *string) {
+	if value != nil {
+		*target = *value
+	}
+}
+
+func setInt(value *int, target *int) {
+	if value != nil {
+		*target = *value
+	}
+}
+
+func setFloat64(value *float64, target *float64) {
 	if value != nil {
 		*target = *value
 	}
