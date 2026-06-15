@@ -525,7 +525,7 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 	serviceID := s.reserveServiceID()
 	output, err := s.materialize(serviceID, req, queryType)
 	if err != nil {
-		if isInsufficientUpstreamResources(err) {
+		if serviceCanBeCreatedWithoutInitialMaterialization(err) {
 			output = materializedOutput{MediaType: outputMediaTypeForQueryType(queryType)}
 			if err := s.registerServiceResource(aggID, serviceID); err != nil {
 				http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
@@ -536,7 +536,7 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 				http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
 				return
 			}
-			svc := s.createService(aggID, serviceID, req, queryType, output, asset, "failed", insufficientUpstreamResourcesMessage, nil)
+			svc := s.createService(aggID, serviceID, req, queryType, output, asset, "ready", "", nil)
 			desc := BuildServiceDescription(s.cfg, svc)
 			w.Header().Set("Location", desc.ID)
 			writeJSONLD(w, http.StatusCreated, desc)
@@ -658,10 +658,6 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 	if !validRPT {
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`UMA as_uri="%s", ticket="%s"`, s.cfg.authorizationServerURL(), ticket))
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		return
-	}
-	if svc.Status == "failed" && svc.ErrorMessage == insufficientUpstreamResourcesMessage {
-		http.Error(w, insufficientUpstreamResourcesMessage, http.StatusFailedDependency)
 		return
 	}
 	needsMaterialization, err := s.serviceNeedsMaterialization(svc)
@@ -1459,6 +1455,11 @@ func isInsufficientUpstreamResources(err error) bool {
 	return errors.As(err, &insufficient)
 }
 
+func serviceCanBeCreatedWithoutInitialMaterialization(err error) bool {
+	var inaccessible inaccessibleSourceError
+	return isInsufficientUpstreamResources(err) || errors.As(err, &inaccessible)
+}
+
 func (e inaccessibleSourceError) Error() string {
 	return e.err.Error()
 }
@@ -1721,7 +1722,7 @@ func (s *Server) fetchHTTPSource(rawURL string) (sourceHTTPResult, error) {
 	}
 	asURI, ticket, ok := parseUMAChallenge(resp.Challenge)
 	if !ok {
-		return sourceHTTPResult{}, fmt.Errorf("source %s returned 401 without UMA challenge", rawURL)
+		return sourceHTTPResult{}, inaccessibleSourceError{err: fmt.Errorf("source %s returned 401 without UMA challenge", rawURL)}
 	}
 	upstreamToken := s.cachedUpstreamToken(rawURL, asURI)
 	var upstreamResponse upstreamTokenResponse
@@ -1765,6 +1766,9 @@ func (s *Server) fetchHTTPSource(rawURL string) (sourceHTTPResult, error) {
 }
 
 func (s *Server) serviceNeedsMaterialization(svc serviceInstance) (bool, error) {
+	if svc.Status == "failed" && svc.ErrorMessage == insufficientUpstreamResourcesMessage {
+		return true, nil
+	}
 	if svc.OutputPath == "" {
 		return true, nil
 	}
@@ -1823,7 +1827,7 @@ func (s *Server) currentHTTPSourceETag(rawURL string, metadata SourceMetadata) (
 	}
 	asURI, ticket, ok := parseUMAChallenge(resp.Challenge)
 	if !ok {
-		return "", fmt.Errorf("source %s returned 401 without UMA challenge", rawURL)
+		return "", nil
 	}
 	upstreamToken, _, err := s.obtainUpstreamRPT(rawURL, asURI, ticket)
 	if err != nil {
