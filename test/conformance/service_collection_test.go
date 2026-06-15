@@ -139,8 +139,7 @@ func TestAGGRSVC009(t *testing.T) {
 
 	for name, body := range map[string]string{
 		"unsupported transformation": `{"transformation":"https://aggregator.example/transformations#Other","query":"SELECT * WHERE { ?s ?p ?o }","source_urls":["https://source.example/data.ttl"]}`,
-		"missing query":              `{"transformation":"https://aggregator.example/transformations#QueryView","source_urls":["https://source.example/data.ttl"]}`,
-		"missing sources":            `{"transformation":"https://aggregator.example/transformations#QueryView","query":"SELECT * WHERE { ?s ?p ?o }"}`,
+		"missing sources":            `{"transformation":"https://aggregator.example/transformations#MediaProfileAggregation","query":"SELECT * WHERE { ?s ?p ?o }"}`,
 	} {
 		rec := request(server, http.MethodPost, mustPath(agg.ServiceCollectionEndpoint), "application/json", []byte(body))
 		if rec.Code != http.StatusBadRequest {
@@ -326,9 +325,11 @@ func TestAGGRSVC030(t *testing.T) {
 }
 
 func TestMilestone5ConstructProducesTurtleOutput(t *testing.T) {
-	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
+	cfg := httpapi.DefaultConfig("https://aggregator.example")
+	cfg.MediaProfileQuery = "CONSTRUCT WHERE { ?s ?p ?o }"
+	server := httpapi.NewServer(cfg)
 	agg := provision(t, server)
-	desc := createService(t, server, agg.ServiceCollectionEndpoint, serviceRequest(t, "CONSTRUCT WHERE { ?s ?p ?o }"))
+	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
 	if desc.Status != "ready" {
 		t.Fatalf("service status = %q, want ready", desc.Status)
@@ -382,22 +383,23 @@ func TestMilestone5TurtleServiceDeploymentCreatesService(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &desc); err != nil {
 		t.Fatalf("Turtle service create response must be JSON-LD: %v", err)
 	}
-	if desc.Transformation != "https://aggregator.example/transformations#QueryView" || desc.QueryType != "SELECT" || len(desc.SourceURLs) != 1 {
+	if desc.Transformation != "https://aggregator.example/transformations#MediaProfileAggregation" || desc.QueryType != "SELECT" || len(desc.SourceURLs) != 1 {
 		t.Fatalf("Turtle deployment mapped to unexpected service description: %#v", desc)
 	}
 }
 
 func TestMilestone5RejectsUnsupportedQueries(t *testing.T) {
-	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
-	agg := provision(t, server)
-
 	for name, query := range map[string]string{
 		"ASK":            "ASK WHERE { ?s ?p ?o }",
 		"DESCRIBE":       "DESCRIBE ?s WHERE { ?s ?p ?o }",
 		"UPDATE":         "INSERT DATA { <urn:s> <urn:p> <urn:o> }",
 		"remote SERVICE": "SELECT * WHERE { SERVICE <https://remote.example/sparql> { ?s ?p ?o } }",
 	} {
-		rec := request(server, http.MethodPost, mustPath(agg.ServiceCollectionEndpoint), "application/json", []byte(serviceRequest(t, query)))
+		cfg := httpapi.DefaultConfig("https://aggregator.example")
+		cfg.MediaProfileQuery = query
+		server := httpapi.NewServer(cfg)
+		agg := provision(t, server)
+		rec := request(server, http.MethodPost, mustPath(agg.ServiceCollectionEndpoint), "application/json", []byte(validServiceRequest(t)))
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("%s query status = %d, want 400", name, rec.Code)
 		}
@@ -1431,7 +1433,7 @@ func serviceRequest(t *testing.T, query string) string {
 }
 
 func serviceRequestWithSource(query, sourceURL string) string {
-	return fmt.Sprintf(`{"transformation":"https://aggregator.example/transformations#QueryView","query":%q,"source_urls":[%q]}`, query, sourceURL)
+	return fmt.Sprintf(`{"transformation":"https://aggregator.example/transformations#MediaProfileAggregation","source_urls":[%q]}`, sourceURL)
 }
 
 func mediaProfileServiceRequest(sourceURL string) string {
@@ -1508,10 +1510,10 @@ func turtleServiceRequest(t *testing.T, query string) string {
 @prefix : <https://aggregator.example/transformations#> .
 
 [] a aggr:Service ;
-   aggr:performs <https://aggregator.example/transformations#QueryView> ;
+   aggr:performs <https://aggregator.example/transformations#MediaProfileAggregation> ;
    aggr:applies [
      a fno:AppliedFunction ;
-     fnoc:applies <https://aggregator.example/transformations#QueryView> ;
+     fnoc:applies <https://aggregator.example/transformations#MediaProfileAggregation> ;
      fnoc:parameterBindings (
        [
          fnoc:boundParameter <https://aggregator.example/transformations#QueryParameter> ;

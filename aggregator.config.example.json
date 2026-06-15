@@ -5,6 +5,17 @@
   "password": "my-password",
   "web_id": "http://localhost:3000/my-pod/card#me",
   "authorization_server": "http://uma.local:4000/uma",
+  "transformation_fragment": "MediaProfileAggregation",
+  "transformation_label": "Media Profile Aggregation",
+  "transformation_description": "Aggregates multiple media profiles and psuedomizes them and generates one aggreagted media profile.",
+  "transformation_comment": "Aggregates multiple media profiles and psuedomizes them and generates one aggreagted media profile.",
+  "transformation_source_fragment": "Source",
+  "transformation_source_label": "Source",
+  "transformation_output_fragment": "MediaProfile",
+  "transformation_output_label": "MediaProfile",
+  "media_profile_index_query": "SELECT DISTINCT ?object WHERE {\n  ?subject <http://example.com/includes> ?object\n}",
+  "media_profile_query": "SELECT * WHERE {\n  ?s ?p ?o .\n}",
+  "upstream_derivation_resource_name": "Aggregator Media Profile",
   "minimum_accessible_sources": 2,
   "minimum_accessible_source_ratio": 0.7
 }

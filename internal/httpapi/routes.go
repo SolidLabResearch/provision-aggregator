@@ -475,7 +475,6 @@ func (s *Server) deleteAggregator(aggID string) {
 
 type createServiceRequest struct {
 	Transformation string   `json:"transformation"`
-	Query          string   `json:"query"`
 	SourceURLs     []string `json:"source_urls"`
 }
 
@@ -515,8 +514,8 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 		return
 	}
 	req.Transformation = defaultString(req.Transformation, supportedTransformationURL(s.cfg))
-	req.Query = s.cfg.mediaProfileQuery()
-	queryType, err := validateQuery(req.Query)
+	query := s.cfg.mediaProfileQuery()
+	queryType, err := validateQuery(query)
 	if req.Transformation != supportedTransformationURL(s.cfg) || err != nil || len(req.SourceURLs) == 0 {
 		http.Error(w, "invalid service request", http.StatusBadRequest)
 		return
@@ -668,7 +667,6 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 	if needsMaterialization {
 		req := createServiceRequest{
 			Transformation: svc.Transformation,
-			Query:          svc.Query,
 			SourceURLs:     append([]string(nil), svc.SourceURLs...),
 		}
 		output, err := s.materialize(serviceID, req, svc.QueryType)
@@ -808,7 +806,7 @@ func (s *Server) createService(aggID string, serviceID string, req createService
 		ID:                  serviceID,
 		AggregatorID:        aggID,
 		Transformation:      req.Transformation,
-		Query:               req.Query,
+		Query:               s.cfg.mediaProfileQuery(),
 		QueryType:           queryType,
 		SourceURLs:          append([]string(nil), req.SourceURLs...),
 		SourceMetadata:      cloneSourceMetadata(output.Sources),
@@ -1578,7 +1576,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		s.cfg.OxigraphBinary,
 		"query",
 		"--location", storeDir,
-		"--query", req.Query,
+		"--query", s.cfg.mediaProfileQuery(),
 		"--results-file", outputPath,
 		"--results-format", resultFormat,
 	); err != nil {

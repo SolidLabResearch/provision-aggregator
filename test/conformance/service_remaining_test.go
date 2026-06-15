@@ -30,8 +30,8 @@ func TestAGGRSVC024(t *testing.T) {
 	if before.Code != http.StatusOK || after.Code != http.StatusOK {
 		t.Fatalf("transformation catalog status before/after = %d/%d, want 200/200", before.Code, after.Code)
 	}
-	if !strings.Contains(after.Body.String(), "QueryView") {
-		t.Fatalf("instance transformation catalog does not advertise QueryView: %s", after.Body.String())
+	if !strings.Contains(after.Body.String(), "MediaProfileAggregation") {
+		t.Fatalf("instance transformation catalog does not advertise MediaProfileAggregation: %s", after.Body.String())
 	}
 }
 
@@ -43,9 +43,9 @@ func TestAGGRSVC024InitialInstanceTransformationCatalogIsEmpty(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET instance transformation catalog status = %d, want 200", rec.Code)
 	}
-	if strings.Contains(rec.Body.String(), "http://localhost:8080/transformations#QueryView") ||
-		strings.Contains(rec.Body.String(), "https://aggregator.example/transformations#QueryView") {
-		t.Fatalf("initial instance transformation catalog must not include server-level QueryView: %s", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "http://localhost:8080/transformations#MediaProfileAggregation") ||
+		strings.Contains(rec.Body.String(), "https://aggregator.example/transformations#MediaProfileAggregation") {
+		t.Fatalf("initial instance transformation catalog must not include server-level MediaProfileAggregation: %s", rec.Body.String())
 	}
 	var catalog httpapi.TransformationCatalog
 	if err := json.Unmarshal(rec.Body.Bytes(), &catalog); err != nil {

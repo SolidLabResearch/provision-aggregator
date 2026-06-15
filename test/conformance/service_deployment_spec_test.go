@@ -268,7 +268,7 @@ func specServiceRequest(t *testing.T, options specServiceOptions) string {
 	}
 	transformation := options.Transformation
 	if transformation == "" {
-		transformation = "https://aggregator.example/transformations#QueryView"
+		transformation = "https://aggregator.example/transformations#MediaProfileAggregation"
 	}
 	appliedTransformation := options.AppliedTransformation
 	if appliedTransformation == "" {
@@ -287,7 +287,7 @@ func specServiceRequest(t *testing.T, options specServiceOptions) string {
 
 func specAppliedOnlyRequest(t *testing.T) string {
 	t.Helper()
-	return specPrefixes(specServiceOptions{}) + "\n" + specAppliedFunction(t, "https://aggregator.example/transformations#QueryView", specServiceOptions{}) + " .\n"
+	return specPrefixes(specServiceOptions{}) + "\n" + specAppliedFunction(t, "https://aggregator.example/transformations#MediaProfileAggregation", specServiceOptions{}) + " .\n"
 }
 
 func specMultipleServicesRequest(t *testing.T) string {

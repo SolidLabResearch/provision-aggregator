@@ -107,8 +107,6 @@ func serviceRequestFromTriples(cfg Config, triples []turtleTriple) (createServic
 			return createServiceRequest{}, fmt.Errorf("parameter binding must include boundParameter and boundToTerm")
 		}
 		switch parameter {
-		case cfg.absolute(cfg.TransformationCatalogPath) + "#QueryParameter", cfg.absolute(cfg.TransformationCatalogPath) + "#Query":
-			req.Query = value
 		case transformationSourceParameterURL(cfg), cfg.absolute(cfg.TransformationCatalogPath) + "#SourceParameter", cfg.absolute(cfg.TransformationCatalogPath) + "#Sources", cfg.absolute(cfg.TransformationCatalogPath) + "#Source":
 			req.SourceURLs = append(req.SourceURLs, value)
 		}
@@ -116,7 +114,6 @@ func serviceRequestFromTriples(cfg Config, triples []turtleTriple) (createServic
 	if len(req.SourceURLs) == 0 {
 		return createServiceRequest{}, fmt.Errorf("applied function is missing required source binding")
 	}
-	req.Query = cfg.mediaProfileQuery()
 	return req, nil
 }
 
