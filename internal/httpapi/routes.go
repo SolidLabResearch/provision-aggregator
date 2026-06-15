@@ -18,12 +18,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 func NewMux(cfg Config) http.Handler {
 	return NewServer(cfg).Routes()
 }
+
+// serverInstanceSeq gives each Server its own working directories so that
+// concurrent server instances (and their background availability pollers) never
+// share the same oxigraph workspace or output paths.
+var serverInstanceSeq atomic.Uint64
 
 type Server struct {
 	cfg                       Config
@@ -50,9 +56,18 @@ type Server struct {
 	authorizationServerClient authorizationServerClient
 	protectionToken           protectionToken
 	now                       func() time.Time
+	pollingServices           map[string]bool
+	materializeLocks          map[string]*sync.Mutex
 }
 
 func NewServer(cfg Config) *Server {
+	instance := "instance-" + strconv.FormatUint(serverInstanceSeq.Add(1), 10)
+	if cfg.OxigraphWorkdir != "" {
+		cfg.OxigraphWorkdir = filepath.Join(cfg.OxigraphWorkdir, instance)
+	}
+	if cfg.OutputsDirectory != "" {
+		cfg.OutputsDirectory = filepath.Join(cfg.OutputsDirectory, instance)
+	}
 	server := &Server{
 		cfg:                      cfg,
 		nextID:                   1,
@@ -64,6 +79,8 @@ func NewServer(cfg Config) *Server {
 		outputAssets:             make(map[string]outputAsset),
 		upstreamTokens:           make(map[string]cachedUpstreamToken),
 		authorizationResourceIDs: make(map[string]string),
+		pollingServices:          make(map[string]bool),
+		materializeLocks:         make(map[string]*sync.Mutex),
 		now:                      time.Now,
 	}
 	server.initializeAccountToken()
@@ -536,6 +553,7 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 				return
 			}
 			svc := s.createService(aggID, serviceID, req, queryType, output, asset, "ready", "", nil)
+			s.startSourceAvailabilityPolling(aggID, serviceID, req, queryType)
 			desc := BuildServiceDescription(s.cfg, svc)
 			w.Header().Set("Location", desc.ID)
 			writeJSONLD(w, http.StatusCreated, desc)
@@ -673,6 +691,7 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 		if err != nil {
 			if isInsufficientUpstreamResources(err) {
 				s.markServiceFailed(aggID, serviceID, insufficientUpstreamResourcesMessage)
+				s.startSourceAvailabilityPolling(aggID, serviceID, req, svc.QueryType)
 				http.Error(w, insufficientUpstreamResourcesMessage, http.StatusFailedDependency)
 				return
 			}
@@ -684,29 +703,10 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 			return
 		}
 
-		derivedFrom, err := s.updateOutputAssetDerivedFrom(svc.AASResourceID, serviceID, output)
-		status := "ready"
-		errorMessage := ""
-		if err != nil {
-			status = "failed"
-			errorMessage = err.Error()
+		updatedSvc, exists, err := s.applyMaterializedOutput(aggID, serviceID, output)
+		if exists {
+			svc = updatedSvc
 		}
-
-		s.mu.Lock()
-		if existing, exists := s.services[aggID][serviceID]; exists {
-			existing.SourceMetadata = cloneSourceMetadata(output.Sources)
-			existing.OutputMediaType = output.MediaType
-			existing.OutputPath = output.Path
-			existing.DerivedFrom = cloneDerivations(derivedFrom)
-			existing.UpstreamDerivation = output.UpstreamDerivation
-			existing.UpstreamDerivations = cloneUpstreamDerivations(output.UpstreamDerivations)
-			existing.Status = status
-			existing.ErrorMessage = errorMessage
-			s.services[aggID][serviceID] = existing
-			s.serviceRevisions[aggID]++
-			svc = existing
-		}
-		s.mu.Unlock()
 
 		if err == nil {
 			validRPT, err = s.outputRPTIsValid(token, svc.AASResourceID)
@@ -768,6 +768,113 @@ func (s *Server) markServiceFailed(aggID, serviceID, message string) {
 		s.services[aggID][serviceID] = existing
 		s.serviceRevisions[aggID]++
 	}
+}
+
+// serviceMaterializeLock returns a per-service mutex so that synchronous
+// (re)materialization and background availability polling never operate on the
+// same oxigraph workspace concurrently.
+func (s *Server) serviceMaterializeLock(serviceID string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.materializeLocks == nil {
+		s.materializeLocks = make(map[string]*sync.Mutex)
+	}
+	lock, ok := s.materializeLocks[serviceID]
+	if !ok {
+		lock = &sync.Mutex{}
+		s.materializeLocks[serviceID] = lock
+	}
+	return lock
+}
+
+// applyMaterializedOutput commits a freshly materialized output to the stored
+// service instance, updating its derivation evidence and readiness status.
+func (s *Server) applyMaterializedOutput(aggID, serviceID string, output materializedOutput) (serviceInstance, bool, error) {
+	svc, ok := s.service(aggID, serviceID)
+	if !ok {
+		return serviceInstance{}, false, nil
+	}
+
+	derivedFrom, err := s.updateOutputAssetDerivedFrom(svc.AASResourceID, serviceID, output)
+	status := "ready"
+	errorMessage := ""
+	if err != nil {
+		status = "failed"
+		errorMessage = err.Error()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, exists := s.services[aggID][serviceID]
+	if !exists {
+		return serviceInstance{}, false, err
+	}
+	existing.SourceMetadata = cloneSourceMetadata(output.Sources)
+	existing.OutputMediaType = output.MediaType
+	existing.OutputPath = output.Path
+	existing.DerivedFrom = cloneDerivations(derivedFrom)
+	existing.UpstreamDerivation = output.UpstreamDerivation
+	existing.UpstreamDerivations = cloneUpstreamDerivations(output.UpstreamDerivations)
+	existing.Status = status
+	existing.ErrorMessage = errorMessage
+	s.services[aggID][serviceID] = existing
+	s.serviceRevisions[aggID]++
+	return existing, true, err
+}
+
+// startSourceAvailabilityPolling launches (at most one per service) a
+// background loop that re-attempts materialization every poll interval. This is
+// triggered whenever an upstream resource (index or profile source) cannot be
+// reached and an access request has been submitted: once that request is
+// accepted the resource becomes reachable and the output is materialized.
+func (s *Server) startSourceAvailabilityPolling(aggID, serviceID string, req createServiceRequest, queryType string) {
+	s.mu.Lock()
+	if s.pollingServices == nil {
+		s.pollingServices = make(map[string]bool)
+	}
+	if s.pollingServices[serviceID] {
+		s.mu.Unlock()
+		return
+	}
+	s.pollingServices[serviceID] = true
+	s.mu.Unlock()
+
+	interval := s.cfg.sourceAvailabilityPollInterval()
+	reqCopy := createServiceRequest{
+		Transformation: req.Transformation,
+		SourceURLs:     append([]string(nil), req.SourceURLs...),
+	}
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			delete(s.pollingServices, serviceID)
+			s.mu.Unlock()
+		}()
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if _, ok := s.service(aggID, serviceID); !ok {
+				return
+			}
+			output, err := s.materialize(serviceID, reqCopy, queryType)
+			if err != nil {
+				if isInsufficientUpstreamResources(err) {
+					// Access request not accepted yet; keep polling.
+					continue
+				}
+				log.Printf("httpapi: stopping availability polling for service %s: %v", serviceID, err)
+				return
+			}
+			if _, _, err := s.applyMaterializedOutput(aggID, serviceID, output); err != nil {
+				log.Printf("httpapi: availability polling materialized service %s but commit failed: %v", serviceID, err)
+				return
+			}
+			log.Printf("httpapi: availability polling completed materialization for service %s", serviceID)
+			return
+		}
+	}()
 }
 
 func (s *Server) deleteService(aggID string, svc serviceInstance) error {
@@ -1453,6 +1560,11 @@ func isInsufficientUpstreamResources(err error) bool {
 	return errors.As(err, &insufficient)
 }
 
+func isInaccessibleSourceError(err error) bool {
+	var inaccessible inaccessibleSourceError
+	return errors.As(err, &inaccessible)
+}
+
 func serviceCanBeCreatedWithoutInitialMaterialization(err error) bool {
 	var inaccessible inaccessibleSourceError
 	return isInsufficientUpstreamResources(err) || errors.As(err, &inaccessible)
@@ -1488,11 +1600,16 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	var sources []SourceMetadata
 	var upstreamDerivations []upstreamDerivationEvidence
 	var lastSourceErr error
+	var lastIndexAccessErr error
+	accessibleIndexSources := 0
 	for i, sourceURL := range req.SourceURLs {
 		source, err := s.stageSource(stagingDir, i, sourceURL)
 		if err != nil {
 			log.Printf("httpapi: failed to stage index source %s: %v", sourceURL, err)
 			lastSourceErr = err
+			if isInaccessibleSourceError(err) {
+				lastIndexAccessErr = err
+			}
 			continue
 		}
 		sources = append(sources, source.Metadata)
@@ -1500,6 +1617,19 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 			log.Printf("httpapi: failed to load index source %s into oxigraph: %v", sourceURL, err)
 			lastSourceErr = err
 			continue
+		}
+		accessibleIndexSources++
+	}
+
+	// When the index itself cannot be reached because of an access decision we
+	// have no way to discover the profile sources it references, so treat it the
+	// same as not having enough accessible upstream resources (HTTP 424) and let
+	// the caller poll until the access request is accepted. Other failures (e.g.
+	// malformed/non-RDF index, oxigraph errors) keep their original handling.
+	if len(req.SourceURLs) > 0 && accessibleIndexSources == 0 && lastIndexAccessErr != nil {
+		return materializedOutput{}, insufficientUpstreamResourcesError{
+			Accessible: accessibleIndexSources,
+			Total:      len(req.SourceURLs),
 		}
 	}
 

@@ -22,11 +22,11 @@ func TestAGGRSEC006(t *testing.T) {
 
 func TestAGGRSEC007(t *testing.T) {
 	server, desc := protectedOutput(t)
-	challenge := request(server, http.MethodGet, mustPath(desc.OutputURL), "", nil)
+	challenge := request(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil)
 	if challenge.Code != http.StatusUnauthorized || !strings.Contains(challenge.Header().Get("WWW-Authenticate"), `ticket="`) {
 		t.Fatalf("missing RPT challenge = %d %q", challenge.Code, challenge.Header().Get("WWW-Authenticate"))
 	}
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("valid RPT status = %d, want 200", rec.Code)
 	}
@@ -34,7 +34,7 @@ func TestAGGRSEC007(t *testing.T) {
 
 func TestAGGRSEC008(t *testing.T) {
 	server, desc := protectedOutput(t)
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "expired-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "expired-rpt")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expired RPT status = %d, want 401", rec.Code)
 	}
@@ -42,7 +42,7 @@ func TestAGGRSEC008(t *testing.T) {
 
 func TestAGGRSEC009(t *testing.T) {
 	server, desc := protectedOutput(t)
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "insufficient-scope-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "insufficient-scope-rpt")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("insufficient-scope RPT status = %d, want 401", rec.Code)
 	}
@@ -50,7 +50,7 @@ func TestAGGRSEC009(t *testing.T) {
 
 func TestAGGRSEC010(t *testing.T) {
 	server, desc := protectedOutput(t)
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("valid RPT introspection-equivalent access status = %d, want 200", rec.Code)
 	}
@@ -58,7 +58,7 @@ func TestAGGRSEC010(t *testing.T) {
 
 func TestAGGRSEC011(t *testing.T) {
 	server, desc := protectedOutput(t)
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "expired-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "expired-rpt")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("inactive RPT status = %d, want 401", rec.Code)
 	}
@@ -73,15 +73,15 @@ func TestAGGRSEC012(t *testing.T) {
 }
 
 func TestAGGRSEC013(t *testing.T) {
-	_, desc := protectedOutput(t)
-	if len(desc.DerivedFrom) != 0 {
-		t.Fatalf("derivation evidence = %#v, want none without upstream authorization server evidence", desc.DerivedFrom)
+	server, desc := protectedOutput(t)
+	if derived := derivedFromUpdate(server.DerivedFromUpdates(), desc.Dataset.Distribution.AccessURL).DerivedFrom; len(derived) != 0 {
+		t.Fatalf("derivation evidence = %#v, want none without upstream authorization server evidence", derived)
 	}
 }
 
 func TestAGGRSEC014(t *testing.T) {
 	server, desc := protectedOutput(t)
-	rec := request(server, http.MethodGet, mustPath(desc.OutputURL), "", nil)
+	rec := request(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil)
 	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Header().Get("WWW-Authenticate"), "UMA ") {
 		t.Fatalf("derived resource need_info-equivalent challenge = %d %q", rec.Code, rec.Header().Get("WWW-Authenticate"))
 	}
@@ -89,7 +89,7 @@ func TestAGGRSEC014(t *testing.T) {
 
 func TestAGGRSEC015(t *testing.T) {
 	server, desc := protectedOutput(t)
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("derived-resource RPT status = %d, want 200", rec.Code)
 	}
@@ -139,7 +139,7 @@ func TestAGGRSEC020(t *testing.T) {
 
 func TestAGGRSEC021(t *testing.T) {
 	server, desc := protectedOutput(t)
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "ticket-not-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "ticket-not-rpt")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid UMA ticket-as-token status = %d, want 401", rec.Code)
 	}
@@ -165,7 +165,7 @@ func TestAGGRSEC023(t *testing.T) {
 
 func TestAGGRSEC024(t *testing.T) {
 	server, desc := protectedOutput(t)
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "invalid-management-access-token")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "invalid-management-access-token")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid management access token status = %d, want 401", rec.Code)
 	}
@@ -252,13 +252,13 @@ func TestAGGRSEC032(t *testing.T) {
 
 func TestAGGRSEC033(t *testing.T) {
 	server, desc := protectedOutput(t)
-	for _, path := range []string{mustPath(desc.ID), mustPath(desc.OutputURL)} {
+	for _, path := range []string{mustPath(desc.ID), mustPath(desc.Dataset.Distribution.AccessURL)} {
 		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPatch, http.MethodPut, http.MethodDelete} {
 			assertCORSPreflight(t, server, path, method)
 		}
 	}
 	assertCORSActual(t, server, http.MethodGet, mustPath(desc.ID))
-	assertCORSActualWithBearer(t, server, http.MethodGet, mustPath(desc.OutputURL), "valid-output-rpt")
+	assertCORSActualWithBearer(t, server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "valid-output-rpt")
 }
 
 func assertCORSPreflight(t *testing.T, server *httpapi.Server, path, method string) {

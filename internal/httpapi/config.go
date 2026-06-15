@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -37,6 +38,7 @@ type Config struct {
 	UpstreamDerivationResourceName                  string
 	MinimumAccessibleSources                        int
 	MinimumAccessibleSourceRatio                    float64
+	SourceAvailabilityPollInterval                  time.Duration
 	FailDerivedFromUpdate                           bool
 	OutputReadScope                                 string
 	ValidOutputRPTs                                 []string
@@ -190,6 +192,13 @@ func (c Config) minimumAccessibleSourceRatio() float64 {
 		return 0
 	}
 	return c.MinimumAccessibleSourceRatio
+}
+
+func (c Config) sourceAvailabilityPollInterval() time.Duration {
+	if c.SourceAvailabilityPollInterval > 0 {
+		return c.SourceAvailabilityPollInterval
+	}
+	return 2 * time.Second
 }
 
 func defaultString(value, fallback string) string {

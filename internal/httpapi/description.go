@@ -102,26 +102,16 @@ type ServiceCollection struct {
 }
 
 type ServiceDescription struct {
-	Context         map[string]any   `json:"@context"`
-	ID              string           `json:"@id"`
-	Type            []string         `json:"@type"`
-	AggregatorID    string           `json:"aggregator_id"`
-	OutputURL       string           `json:"output_url"`
-	OutputMediaType string           `json:"output_media_type,omitempty"`
-	AASIssuer       string           `json:"aas_issuer,omitempty"`
-	AASResourceID   string           `json:"aas_resource_id,omitempty"`
-	DerivedFrom     []Derivation     `json:"derived_from,omitempty"`
-	Transformation  string           `json:"performs"`
-	Query           string           `json:"query"`
-	QueryType       string           `json:"query_type"`
-	SourceURLs      []string         `json:"source_urls"`
-	SourceMetadata  []SourceMetadata `json:"source_metadata,omitempty"`
-	Status          string           `json:"status"`
-	StatusDetail    string           `json:"statusDetail"`
-	CreatedAt       string           `json:"createdAt"`
-	ConformsTo      string           `json:"conformsTo"`
-	Applies         string           `json:"applies"`
-	Dataset         ServiceDataset   `json:"servesDataset"`
+	Context        map[string]any `json:"@context"`
+	ID             string         `json:"@id"`
+	Type           []string       `json:"@type"`
+	Transformation string         `json:"performs"`
+	Status         string         `json:"status"`
+	StatusDetail   string         `json:"statusDetail"`
+	CreatedAt      string         `json:"createdAt"`
+	ConformsTo     string         `json:"conformsTo"`
+	Applies        string         `json:"applies"`
+	Dataset        ServiceDataset `json:"servesDataset"`
 }
 
 type SourceMetadata struct {
@@ -248,24 +238,14 @@ func BuildServiceDescription(cfg Config, svc serviceInstance) ServiceDescription
 				"@type": "@id",
 			},
 		},
-		ID:              url,
-		Type:            []string{"aggr:Service", "dcat:DataService", "prov:SoftwareAgent"},
-		AggregatorID:    svc.AggregatorID,
-		OutputURL:       outputURL,
-		OutputMediaType: svc.OutputMediaType,
-		AASIssuer:       svc.AASIssuer,
-		AASResourceID:   svc.AASResourceID,
-		DerivedFrom:     cloneDerivations(svc.DerivedFrom),
-		Transformation:  svc.Transformation,
-		Query:           svc.Query,
-		QueryType:       svc.QueryType,
-		SourceURLs:      append([]string(nil), svc.SourceURLs...),
-		SourceMetadata:  cloneSourceMetadata(svc.SourceMetadata),
-		Status:          svc.Status,
-		StatusDetail:    svc.ErrorMessage,
-		CreatedAt:       svc.CreatedAt.UTC().Format(time.RFC3339),
-		ConformsTo:      "https://w3id.org/aggregator#",
-		Applies:         instanceAppliedFunctionURL(cfg, svc.AggregatorID, svc),
+		ID:             url,
+		Type:           []string{"aggr:Service", "dcat:DataService", "prov:SoftwareAgent"},
+		Transformation: svc.Transformation,
+		Status:         svc.Status,
+		StatusDetail:   svc.ErrorMessage,
+		CreatedAt:      svc.CreatedAt.UTC().Format(time.RFC3339),
+		ConformsTo:     "https://w3id.org/aggregator#",
+		Applies:        instanceAppliedFunctionURL(cfg, svc.AggregatorID, svc),
 		Dataset: ServiceDataset{
 			ID:        datasetURL,
 			Type:      "dcat:Dataset",

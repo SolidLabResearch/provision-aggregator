@@ -1,7 +1,6 @@
 package conformance_test
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -206,13 +205,13 @@ func TestAGGRSVC015(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	if desc.Dataset.Distribution.AccessURL != desc.OutputURL {
-		t.Fatalf("distribution accessURL = %q, want output URL %q", desc.Dataset.Distribution.AccessURL, desc.OutputURL)
+	if desc.Dataset.Distribution.AccessURL != desc.ID+"/output" {
+		t.Fatalf("distribution accessURL = %q, want output URL %q", desc.Dataset.Distribution.AccessURL, desc.ID+"/output")
 	}
 	if desc.Dataset.Distribution.AccessService != desc.ID {
 		t.Fatalf("distribution accessService = %q, want service URL %q", desc.Dataset.Distribution.AccessService, desc.ID)
 	}
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if link := rec.Header().Get("Link"); !strings.Contains(link, desc.ID) || !strings.Contains(link, "aggr:fromService") {
 		t.Fatalf("output Link header = %q, want service backlink", link)
 	}
@@ -334,10 +333,10 @@ func TestMilestone5ConstructProducesTurtleOutput(t *testing.T) {
 	if desc.Status != "ready" {
 		t.Fatalf("service status = %q, want ready", desc.Status)
 	}
-	if desc.OutputMediaType != "text/turtle" {
-		t.Fatalf("output media type = %q, want text/turtle", desc.OutputMediaType)
+	if desc.Dataset.Distribution.MediaType != "http://www.iana.org/assignments/media-types/text/turtle" {
+		t.Fatalf("distribution media type = %q, want text/turtle", desc.Dataset.Distribution.MediaType)
 	}
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("output status = %d, want 200", rec.Code)
 	}
@@ -357,10 +356,10 @@ func TestMilestone5SelectProducesSPARQLResultsJSON(t *testing.T) {
 	if desc.Status != "ready" {
 		t.Fatalf("service status = %q, want ready", desc.Status)
 	}
-	if desc.OutputMediaType != "application/sparql-results+json" {
-		t.Fatalf("output media type = %q, want application/sparql-results+json", desc.OutputMediaType)
+	if desc.Dataset.Distribution.MediaType != "http://www.iana.org/assignments/media-types/application/sparql-results+json" {
+		t.Fatalf("distribution media type = %q, want application/sparql-results+json", desc.Dataset.Distribution.MediaType)
 	}
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("output status = %d, want 200", rec.Code)
 	}
@@ -383,7 +382,7 @@ func TestMilestone5TurtleServiceDeploymentCreatesService(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &desc); err != nil {
 		t.Fatalf("Turtle service create response must be JSON-LD: %v", err)
 	}
-	if desc.Transformation != "https://aggregator.example/transformations#MediaProfileAggregation" || desc.QueryType != "SELECT" || len(desc.SourceURLs) != 1 {
+	if desc.Transformation != "https://aggregator.example/transformations#MediaProfileAggregation" {
 		t.Fatalf("Turtle deployment mapped to unexpected service description: %#v", desc)
 	}
 }
@@ -411,11 +410,12 @@ func TestAGGRSEC001(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	if desc.AASIssuer != "https://aas.example" {
-		t.Fatalf("aas_issuer = %q, want configured AAS issuer", desc.AASIssuer)
+	registration := resourceRegistration(server.ResourceRegistrations(), desc.Dataset.Distribution.AccessURL)
+	if registration.AuthorizationServer != "https://aas.example" {
+		t.Fatalf("output resource authorization server = %q, want configured AAS issuer", registration.AuthorizationServer)
 	}
-	if desc.AASResourceID == "" {
-		t.Fatalf("service description must include aas_resource_id")
+	if desc.Dataset.Distribution.AccessURL == "" {
+		t.Fatalf("service description must include an output resource URL")
 	}
 }
 
@@ -424,7 +424,7 @@ func TestAGGRSEC002(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	rec := request(server, http.MethodGet, mustPath(desc.OutputURL), "", nil)
+	rec := request(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("output without RPT status = %d, want 401", rec.Code)
 	}
@@ -435,7 +435,7 @@ func TestAGGRSEC003(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	rec := request(server, http.MethodGet, mustPath(desc.OutputURL), "", nil)
+	rec := request(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil)
 	challenge := rec.Header().Get("WWW-Authenticate")
 	if !strings.HasPrefix(challenge, "UMA ") || !strings.Contains(challenge, `as_uri="https://aas.example"`) || !strings.Contains(challenge, `ticket="`) {
 		t.Fatalf("WWW-Authenticate = %q, want UMA challenge with as_uri and ticket", challenge)
@@ -445,8 +445,8 @@ func TestAGGRSEC003(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("permission requests = %d, want 1", len(requests))
 	}
-	if requests[0].ResourceID != desc.AASResourceID {
-		t.Fatalf("permission resource_id = %q, want service aas_resource_id %q", requests[0].ResourceID, desc.AASResourceID)
+	if requests[0].ResourceID != desc.Dataset.Distribution.AccessURL {
+		t.Fatalf("permission resource_id = %q, want service aas_resource_id %q", requests[0].ResourceID, desc.Dataset.Distribution.AccessURL)
 	}
 	if !contains(requests[0].ResourceScopes, "read") {
 		t.Fatalf("permission resource_scopes = %#v, want read", requests[0].ResourceScopes)
@@ -703,17 +703,18 @@ func TestMilestone10OutputPermissionTicketComesFromAuthorizationServer(t *testin
 	if err := json.Unmarshal(createResponse.Body.Bytes(), &desc); err != nil {
 		t.Fatalf("service create response must be JSON-LD: %v", err)
 	}
-	if len(desc.DerivedFrom) != 1 || desc.DerivedFrom[0].Issuer != "https://uas.example/uma" || desc.DerivedFrom[0].DerivationResourceID != "derivation-resource-service-1" {
-		t.Fatalf("service derived_from = %#v, want upstream UAS issuer and derivation resource ID", desc.DerivedFrom)
+	derived := derivedFromUpdate(server.DerivedFromUpdates(), desc.Dataset.Distribution.AccessURL).DerivedFrom
+	if len(derived) != 1 || derived[0].Issuer != "https://uas.example/uma" || derived[0].DerivationResourceID != "derivation-resource-service-1" {
+		t.Fatalf("service derived_from = %#v, want upstream UAS issuer and derivation resource ID", derived)
 	}
 
-	rec := request(server, http.MethodGet, mustPath(desc.OutputURL), "", nil)
+	rec := request(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil)
 	challenge := rec.Header().Get("WWW-Authenticate")
 	if rec.Code != http.StatusUnauthorized || !strings.Contains(challenge, `ticket="as-issued-ticket"`) {
 		t.Fatalf("output challenge = %d %q, want AS-issued ticket", rec.Code, challenge)
 	}
-	if outputResourceURL != desc.AASResourceID {
-		t.Fatalf("registered UMA resource = %q, want service aas_resource_id %q", outputResourceURL, desc.AASResourceID)
+	if outputResourceURL != desc.Dataset.Distribution.AccessURL {
+		t.Fatalf("registered UMA resource = %q, want service aas_resource_id %q", outputResourceURL, desc.Dataset.Distribution.AccessURL)
 	}
 	if !updatedUASDerivationResource {
 		t.Fatalf("UAS derivation resource metadata was not updated")
@@ -726,7 +727,7 @@ func TestMilestone10OutputPermissionTicketComesFromAuthorizationServer(t *testin
 		t.Fatalf("permission evidence = %#v, want live AS ticket", requests)
 	}
 
-	output := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "as-issued-rpt")
+	output := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "as-issued-rpt")
 	if output.Code != http.StatusOK {
 		t.Fatalf("output with AS-issued RPT status = %d, want 200: %s", output.Code, output.Body.String())
 	}
@@ -852,13 +853,13 @@ func TestMilestone10RematerializedOutputReintrospectsRPTAfterASUpdate(t *testing
 	if err := json.Unmarshal(createResponse.Body.Bytes(), &desc); err != nil {
 		t.Fatalf("decode service description: %v", err)
 	}
-	if outputResourceURL != desc.AASResourceID {
-		t.Fatalf("registered output resource = %q, want %q", outputResourceURL, desc.AASResourceID)
+	if outputResourceURL != desc.Dataset.Distribution.AccessURL {
+		t.Fatalf("registered output resource = %q, want %q", outputResourceURL, desc.Dataset.Distribution.AccessURL)
 	}
 
 	sourceETag = "v2"
 	sourceBody = `<https://example.test/source> <https://example.test/p> "v2" .`
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "old-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "old-output-rpt")
 	challenge := rec.Header().Get("WWW-Authenticate")
 	if rec.Code != http.StatusUnauthorized || !strings.Contains(challenge, `ticket="fresh-output-ticket"`) {
 		t.Fatalf("rematerialized output status = %d challenge = %q, want fresh UMA ticket", rec.Code, challenge)
@@ -873,7 +874,7 @@ func TestAGGRSEC004(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "invalid-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "invalid-rpt")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("output with invalid RPT status = %d, want 401", rec.Code)
 	}
@@ -887,7 +888,7 @@ func TestAGGRSEC005(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("output with valid RPT status = %d, want 200", rec.Code)
 	}
@@ -906,7 +907,7 @@ func TestMilestone7ProtectedSourceIsFetchedUsingUMA(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, serviceRequestWithSource("SELECT * WHERE { ?s ?p ?o }", sourceURL))
 
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("output with valid RPT status = %d, want 200", rec.Code)
 	}
@@ -920,29 +921,6 @@ func TestMilestone7ProtectedSourceIsFetchedUsingUMA(t *testing.T) {
 	}
 	if accesses[0].AuthorizationServer != "https://uas.example" || accesses[0].Ticket != "source-ticket" || accesses[0].Token != "valid-upstream-rpt" {
 		t.Fatalf("upstream access evidence = %#v, want UAS, ticket, and RPT", accesses[0])
-	}
-}
-
-func TestMilestone7SourceMetadataRecordsHash(t *testing.T) {
-	sourceBody := []byte(`<https://example.test/protected> <https://example.test/p> "protected" .`)
-	sourceURL := "https://source.example/source.nt"
-
-	cfg := httpapi.DefaultConfig("https://aggregator.example")
-	cfg.SourceHTTPClient = &http.Client{Transport: protectedSourceTransport{body: sourceBody}}
-	server := httpapi.NewServer(cfg)
-	agg := provision(t, server)
-	desc := createService(t, server, agg.ServiceCollectionEndpoint, serviceRequestWithSource("SELECT * WHERE { ?s ?p ?o }", sourceURL))
-
-	if len(desc.SourceMetadata) != 1 {
-		t.Fatalf("source metadata length = %d, want 1", len(desc.SourceMetadata))
-	}
-	metadata := desc.SourceMetadata[0]
-	expectedHash := fmt.Sprintf("%x", sha256.Sum256(sourceBody))
-	if metadata.URL != sourceURL || metadata.SHA256 != expectedHash {
-		t.Fatalf("source metadata = %#v, want URL %q and sha256 %q", metadata, sourceURL, expectedHash)
-	}
-	if !metadata.Protected || metadata.AuthorizationServer != "https://uas.example" || metadata.PermissionTicket != "source-ticket" {
-		t.Fatalf("source metadata must record protected UMA challenge details: %#v", metadata)
 	}
 }
 
@@ -974,7 +952,7 @@ func TestOutputReusesMaterializationWhenSourceETagIsUnchanged(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, serviceRequestWithSource("SELECT * WHERE { ?s ?p ?o }", sourceURL))
 
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("output status = %d, want 200", rec.Code)
 	}
@@ -1012,7 +990,7 @@ func TestOutputRematerializesWhenSourceETagChanges(t *testing.T) {
 
 	etag = `"v2"`
 	body = []byte(`<https://example.test/source> <https://example.test/p> "second" .`)
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("output status = %d, want 200", rec.Code)
 	}
@@ -1042,8 +1020,8 @@ func TestMilestone7FailedUpstreamAuthorizationCreatesEmptyService(t *testing.T) 
 	if desc.Status != "ready" || desc.StatusDetail != "" {
 		t.Fatalf("service status=%q statusDetail=%q, want ready without status detail", desc.Status, desc.StatusDetail)
 	}
-	if len(desc.DerivedFrom) != 0 {
-		t.Fatalf("derived_from = %#v, want none without upstream derivation evidence", desc.DerivedFrom)
+	if derived := derivedFromUpdate(server.DerivedFromUpdates(), desc.Dataset.Distribution.AccessURL).DerivedFrom; len(derived) != 0 {
+		t.Fatalf("derived_from = %#v, want none without upstream derivation evidence", derived)
 	}
 }
 
@@ -1093,7 +1071,7 @@ func TestMilestone7FailedLiveUpstreamTokenRequestSubmitsAccessRequest(t *testing
 			if req.Method != http.MethodPost {
 				t.Fatalf("access request method = %s, want POST", req.Method)
 			}
-			wantAuthorization := "WebID " + base64.StdEncoding.EncodeToString([]byte(ownerWebID))
+			wantAuthorization := "WebID " + url.QueryEscape(ownerWebID)
 			if req.Header.Get("Authorization") != wantAuthorization {
 				t.Fatalf("access request authorization = %q, want %q", req.Header.Get("Authorization"), wantAuthorization)
 			}
@@ -1182,7 +1160,7 @@ func TestOutputIsUnavailableWhenTooFewIndexedSourcesCanBeAccessed(t *testing.T) 
 		t.Fatalf("service status=%q statusDetail=%q, want ready without status detail", desc.Status, desc.StatusDetail)
 	}
 
-	output := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	output := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if output.Code != http.StatusFailedDependency {
 		t.Fatalf("output status = %d, want 424; body: %s", output.Code, output.Body.String())
 	}
@@ -1195,14 +1173,14 @@ func TestOutputRetriesWhenIndexedSourcesBecomeAvailable(t *testing.T) {
 	fixture := indexedProfileFixture(t, 1, 3)
 
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, mediaProfileServiceRequest(fixture.indexURL))
-	output := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	output := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if output.Code != http.StatusFailedDependency {
 		t.Fatalf("initial output status = %d, want 424; body: %s", output.Code, output.Body.String())
 	}
 
 	fixture.writeProfile(t, 2)
 	fixture.writeProfile(t, 3)
-	output = requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	output = requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if output.Code != http.StatusOK {
 		t.Fatalf("retried output status = %d, want 200; body: %s", output.Code, output.Body.String())
 	}
@@ -1241,7 +1219,7 @@ func TestServiceCreationSucceedsWhenIndexIsInitiallyUnauthorized(t *testing.T) {
 	}
 
 	indexAvailable = true
-	output := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	output := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if output.Code != http.StatusOK {
 		t.Fatalf("output status = %d, want 200; body: %s", output.Code, output.Body.String())
 	}
@@ -1262,7 +1240,7 @@ func TestIndexedSourceAvailabilityThresholdsAreConfigurable(t *testing.T) {
 	if desc.Status != "ready" || desc.StatusDetail != "" {
 		t.Fatalf("service status=%q statusDetail=%q, want ready", desc.Status, desc.StatusDetail)
 	}
-	output := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	output := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if output.Code != http.StatusOK {
 		t.Fatalf("output status = %d, want 200; body: %s", output.Code, output.Body.String())
 	}
@@ -1280,8 +1258,8 @@ func TestMilestone8ServiceCreationUpdatesAASDerivedFrom(t *testing.T) {
 	if len(updates) != 1 {
 		t.Fatalf("derived_from updates = %d, want 1", len(updates))
 	}
-	if updates[0].AASResourceID != desc.AASResourceID {
-		t.Fatalf("derived_from update resource = %q, want %q", updates[0].AASResourceID, desc.AASResourceID)
+	if updates[0].AASResourceID != desc.Dataset.Distribution.AccessURL {
+		t.Fatalf("derived_from update resource = %q, want %q", updates[0].AASResourceID, desc.Dataset.Distribution.AccessURL)
 	}
 	if len(updates[0].DerivedFrom) != 0 {
 		t.Fatalf("derived_from update entries = %#v, want none without upstream authorization server evidence", updates[0].DerivedFrom)
@@ -1293,8 +1271,8 @@ func TestMilestone8PlainSourceDoesNotUseDefaultUpstreamAS(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	if len(desc.DerivedFrom) != 0 {
-		t.Fatalf("derived_from entries = %#v, want none without upstream authorization server evidence", desc.DerivedFrom)
+	if derived := derivedFromUpdate(server.DerivedFromUpdates(), desc.Dataset.Distribution.AccessURL).DerivedFrom; len(derived) != 0 {
+		t.Fatalf("derived_from entries = %#v, want none without upstream authorization server evidence", derived)
 	}
 }
 
@@ -1303,8 +1281,8 @@ func TestMilestone8PlainSourceDoesNotInventDerivationResourceID(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	if len(desc.DerivedFrom) != 0 {
-		t.Fatalf("derived_from entries = %#v, want none without upstream authorization server evidence", desc.DerivedFrom)
+	if derived := derivedFromUpdate(server.DerivedFromUpdates(), desc.Dataset.Distribution.AccessURL).DerivedFrom; len(derived) != 0 {
+		t.Fatalf("derived_from entries = %#v, want none without upstream authorization server evidence", derived)
 	}
 }
 
@@ -1317,9 +1295,6 @@ func TestMilestone8ServiceRemainsFailedIfAASUpdateFails(t *testing.T) {
 
 	if desc.Status != "failed" {
 		t.Fatalf("service status = %q, want failed when AAS derived_from update fails", desc.Status)
-	}
-	if len(desc.DerivedFrom) != 0 {
-		t.Fatalf("failed service derived_from = %#v, want no committed derived_from", desc.DerivedFrom)
 	}
 	if updates := server.DerivedFromUpdates(); len(updates) != 0 {
 		t.Fatalf("derived_from updates = %#v, want none after failed update", updates)
@@ -1349,7 +1324,7 @@ func TestMilestone9DeletesMaterializedOutput(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("DELETE service status = %d, want 204", rec.Code)
 	}
-	output := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	output := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if output.Code != http.StatusNotFound {
 		t.Fatalf("GET deleted output status = %d, want 404", output.Code)
 	}
@@ -1368,8 +1343,8 @@ func TestMilestone9RemovesAASAssetAndDerivedFrom(t *testing.T) {
 	if len(cleanups) != 1 {
 		t.Fatalf("service cleanups = %d, want 1", len(cleanups))
 	}
-	if !cleanups[0].RemovedAASAsset || cleanups[0].AASResourceID != desc.AASResourceID {
-		t.Fatalf("cleanup AAS evidence = %#v, want removed asset %q", cleanups[0], desc.AASResourceID)
+	if !cleanups[0].RemovedAASAsset || cleanups[0].AASResourceID != desc.Dataset.Distribution.AccessURL {
+		t.Fatalf("cleanup AAS evidence = %#v, want removed asset %q", cleanups[0], desc.Dataset.Distribution.AccessURL)
 	}
 	if len(cleanups[0].RemovedDerivedFrom) != 0 {
 		t.Fatalf("cleanup removed derived_from = %#v, want none without upstream authorization server evidence", cleanups[0].RemovedDerivedFrom)

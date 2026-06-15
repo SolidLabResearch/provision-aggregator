@@ -89,7 +89,7 @@ func TestAGGRSVC028(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	if desc.Transformation == "" || desc.Query == "" || desc.QueryType != "SELECT" {
+	if desc.Transformation == "" {
 		t.Fatalf("service does not perform configured transformation: %#v", desc)
 	}
 }
@@ -99,7 +99,7 @@ func TestAGGRSVC031(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.OutputURL), "", nil, "valid-output-rpt")
+	rec := requestWithBearer(server, http.MethodGet, mustPath(desc.Dataset.Distribution.AccessURL), "", nil, "valid-output-rpt")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("service output status = %d, want 200", rec.Code)
 	}

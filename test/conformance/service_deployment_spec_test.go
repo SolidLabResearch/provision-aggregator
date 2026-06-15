@@ -209,7 +209,7 @@ func TestAGGRSEC027(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	registration := resourceRegistration(server.ResourceRegistrations(), desc.OutputURL)
+	registration := resourceRegistration(server.ResourceRegistrations(), desc.Dataset.Distribution.AccessURL)
 	if registration.Kind != "service_output" || !contains(registration.Scopes, "read") {
 		t.Fatalf("output resource registration = %#v, want read scope", registration)
 	}
@@ -240,7 +240,7 @@ func TestMilestone10ServiceResourcesRegisterAtConfiguredAS(t *testing.T) {
 	agg := provision(t, server)
 	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
 
-	for _, resourceURL := range []string{desc.ID, desc.OutputURL} {
+	for _, resourceURL := range []string{desc.ID, desc.Dataset.Distribution.AccessURL} {
 		registration := resourceRegistration(server.ResourceRegistrations(), resourceURL)
 		if registration.AuthorizationServer != cfg.AuthorizationServerURL {
 			t.Fatalf("registration for %q = %#v, want configured AS", resourceURL, registration)
@@ -371,3 +371,16 @@ func resourceRegistration(registrations []httpapi.ResourceRegistrationEvidence, 
 	}
 	return httpapi.ResourceRegistrationEvidence{}
 }
+
+// derivedFromUpdate returns the most recent committed derivation evidence for
+// the given output resource. The service description itself no longer exposes
+// derivation evidence, so tests read it from the recorded AAS update evidence.
+func derivedFromUpdate(updates []httpapi.DerivedFromUpdateEvidence, resourceURL string) httpapi.DerivedFromUpdateEvidence {
+	for i := len(updates) - 1; i >= 0; i-- {
+		if updates[i].AASResourceID == resourceURL {
+			return updates[i]
+		}
+	}
+	return httpapi.DerivedFromUpdateEvidence{}
+}
+
