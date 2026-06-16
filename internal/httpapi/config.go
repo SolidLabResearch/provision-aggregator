@@ -121,6 +121,10 @@ func (c Config) provisionSubject() string {
 	return c.Subject
 }
 
+func (c Config) provisionIDP() string {
+	return strings.TrimRight(c.AccountServerURL, "/")
+}
+
 func (c Config) hasAccountCredentials() bool {
 	return c.AccountServerURL != "" && c.AccountEmail != "" && c.AccountPassword != "" && c.AccountWebID != ""
 }

@@ -37,10 +37,16 @@ func BuildServerDescription(cfg Config) ServerDescription {
 	}
 }
 
+type ManagementResponse struct {
+	Aggregator string `json:"aggregator"`
+	Subject    string `json:"subject,omitempty"`
+	IDP        string `json:"idp,omitempty"`
+}
+
 type AggregatorDescription struct {
-	Context                   string `json:"@context"`
-	ID                        string `json:"aggregator_base_url"`
-	Type                      string `json:"type"`
+	Context string `json:"@context"`
+	ID      string `json:"aggregator_base_url"`
+	Type    string `json:"type"`
 	// Subject is not part of the Aggregator Description proper, but the
 	// provision management flow reuses this representation and MUST report the
 	// subject (WebID or Client_ID) the OIDC tokens were created for. The spec

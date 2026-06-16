@@ -33,8 +33,17 @@ func TestAggregatorWorksBehindBaseURLPathPrefix(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("prefixed provision status = %d, want 201; body: %s", rec.Code, rec.Body.String())
 	}
+	var resp httpapi.ManagementResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode management response: %v", err)
+	}
+
 	var desc httpapi.AggregatorDescription
-	if err := json.Unmarshal(rec.Body.Bytes(), &desc); err != nil {
+	descRec := request(server, http.MethodGet, mustPath(resp.Aggregator), "", nil)
+	if descRec.Code != http.StatusOK {
+		t.Fatalf("GET prefixed aggregator description status = %d, want 200; body: %s", descRec.Code, descRec.Body.String())
+	}
+	if err := json.Unmarshal(descRec.Body.Bytes(), &desc); err != nil {
 		t.Fatalf("decode aggregator description: %v", err)
 	}
 	if desc.ServiceCollectionEndpoint != "https://example.org/aggregator/aggregators/agg-1/services" {
@@ -230,12 +239,15 @@ func TestAGGRMGMT012(t *testing.T) {
 	if rec.Header().Get("Location") == "" {
 		t.Fatalf("provision response must include Location header")
 	}
-	var desc httpapi.AggregatorDescription
-	if err := json.Unmarshal(rec.Body.Bytes(), &desc); err != nil {
-		t.Fatalf("provision response must be aggregator description JSON: %v", err)
+	var resp httpapi.ManagementResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("provision response must be management response JSON: %v", err)
 	}
-	if desc.ID == "" {
-		t.Fatalf("provision response must include aggregator description URL")
+	if resp.Aggregator == "" {
+		t.Fatalf("provision response must include aggregator URL")
+	}
+	if resp.Aggregator != rec.Header().Get("Location") {
+		t.Fatalf("aggregator = %q, want to match Location header %q", resp.Aggregator, rec.Header().Get("Location"))
 	}
 }
 
@@ -266,9 +278,21 @@ func provision(t *testing.T, server *httpapi.Server) httpapi.AggregatorDescripti
 	t.Helper()
 
 	rec := provisionRaw(t, server)
-	var desc httpapi.AggregatorDescription
-	if err := json.Unmarshal(rec.Body.Bytes(), &desc); err != nil {
+	var resp httpapi.ManagementResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("provision response must be JSON: %v", err)
+	}
+	if resp.Aggregator == "" {
+		t.Fatalf("provision response must include aggregator URL: %s", rec.Body.String())
+	}
+
+	descRec := request(server, http.MethodGet, mustPath(resp.Aggregator), "", nil)
+	if descRec.Code != http.StatusOK {
+		t.Fatalf("GET aggregator description status = %d, want 200; body: %s", descRec.Code, descRec.Body.String())
+	}
+	var desc httpapi.AggregatorDescription
+	if err := json.Unmarshal(descRec.Body.Bytes(), &desc); err != nil {
+		t.Fatalf("aggregator description must be JSON: %v", err)
 	}
 	return desc
 }

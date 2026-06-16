@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUMAAccessTokenRequestIncludesDerivationResourceID(t *testing.T) {
@@ -43,6 +45,64 @@ func TestUMAAccessTokenRequestIncludesDerivationResourceID(t *testing.T) {
 	if token.AccessToken != "new-upstream-token" {
 		t.Fatalf("access token = %q, want new-upstream-token", token.AccessToken)
 	}
+}
+
+func TestAggregatorTokenExpiryComesFromIDToken(t *testing.T) {
+	expectedExpiry := time.Now().Add(37 * time.Minute).UTC().Truncate(time.Second)
+	cfg := DefaultConfig("https://aggregator.example")
+	cfg.AccountServerURL = "https://css.example"
+	cfg.AccountEmail = "alice@example.com"
+	cfg.AccountPassword = "password"
+	cfg.AccountWebID = "https://pod.example/alice#me"
+	cfg.AccountHTTPClient = &http.Client{Transport: accountTokenRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case "https://css.example/.account/":
+			if req.Header.Get("Authorization") == "" {
+				return accountTokenJSONResponse(req, http.StatusOK, map[string]any{
+					"controls": map[string]any{"password": map[string]string{"login": "https://css.example/.account/login"}},
+				}), nil
+			}
+			return accountTokenJSONResponse(req, http.StatusOK, map[string]any{
+				"controls": map[string]any{"account": map[string]string{"clientCredentials": "https://css.example/.account/client-credentials"}},
+			}), nil
+		case "https://css.example/.account/login":
+			return accountTokenJSONResponse(req, http.StatusOK, map[string]string{"authorization": "account-authorization"}), nil
+		case "https://css.example/.account/client-credentials":
+			return accountTokenJSONResponse(req, http.StatusOK, map[string]string{"id": "css-client", "secret": "css-secret"}), nil
+		case "https://css.example/.well-known/openid-configuration":
+			return accountTokenJSONResponse(req, http.StatusOK, map[string]string{"token_endpoint": "https://css.example/token"}), nil
+		case "https://css.example/token":
+			return accountTokenJSONResponse(req, http.StatusOK, map[string]string{"access_token": testIDToken(expectedExpiry)}), nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	})}
+
+	server := NewServer(cfg)
+	if server.accountTokenError != nil {
+		t.Fatalf("account token error: %v", server.accountTokenError)
+	}
+	agg, err := server.createAggregator("owner-token")
+	if err != nil {
+		t.Fatalf("createAggregator: %v", err)
+	}
+	if !agg.TokenExpiry.Equal(expectedExpiry) {
+		t.Fatalf("TokenExpiry = %s, want %s (from ID token exp)", agg.TokenExpiry, expectedExpiry)
+	}
+}
+
+// testIDToken builds a minimal unsigned JWT whose payload only carries the
+// `exp` claim, used to verify the Aggregator Instance token expiry is derived
+// from the ID token.
+func testIDToken(exp time.Time) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payloadJSON, err := json.Marshal(map[string]any{"exp": exp.Unix()})
+	if err != nil {
+		panic(err)
+	}
+	payload := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	return header + "." + payload + ".signature"
 }
 
 type accountTokenRoundTripFunc func(*http.Request) (*http.Response, error)

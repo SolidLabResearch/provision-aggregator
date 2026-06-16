@@ -9,7 +9,31 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
+
+// idTokenExpiry decodes the `exp` claim from a JWT ID token (for example the
+// client-credentials token obtained for the Aggregator Instance) and returns it
+// as a UTC time. The second return value is false when the token is not a JWT or
+// does not carry a usable `exp` claim, in which case callers should fall back to
+// a default expiry.
+func idTokenExpiry(token string) (time.Time, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return time.Time{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(claims.Exp, 0).UTC(), true
+}
 
 type accountIndex struct {
 	Controls accountControls `json:"controls"`

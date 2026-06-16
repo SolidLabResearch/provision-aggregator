@@ -1,6 +1,7 @@
 package conformance_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -345,6 +346,121 @@ func TestMilestone5ConstructProducesTurtleOutput(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "<https://example.test/s1>") {
 		t.Fatalf("CONSTRUCT output does not contain source triples: %s", rec.Body.String())
+	}
+}
+
+func TestServiceOutputRespectsAcceptHeader(t *testing.T) {
+	cfg := httpapi.DefaultConfig("https://aggregator.example")
+	cfg.MediaProfileQuery = "CONSTRUCT WHERE { ?s ?p ?o }"
+	server := httpapi.NewServer(cfg)
+	agg := provision(t, server)
+	desc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
+	outputPath := mustPath(desc.Dataset.Distribution.AccessURL)
+
+	acceptable := []string{"", "text/turtle", "text/*", "*/*", "application/json, text/turtle;q=0.9"}
+	for _, accept := range acceptable {
+		rec := requestWithAccept(server, http.MethodGet, outputPath, "valid-output-rpt", accept)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Accept %q: status = %d, want 200", accept, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "text/turtle" {
+			t.Fatalf("Accept %q: Content-Type = %q, want text/turtle", accept, ct)
+		}
+	}
+
+	unacceptable := []string{"application/ld+json", "application/json", "text/turtle;q=0", "image/*"}
+	for _, accept := range unacceptable {
+		rec := requestWithAccept(server, http.MethodGet, outputPath, "valid-output-rpt", accept)
+		if rec.Code != http.StatusNotAcceptable {
+			t.Fatalf("Accept %q: status = %d, want 406", accept, rec.Code)
+		}
+	}
+}
+
+func TestEndpointsRespectAcceptHeader(t *testing.T) {
+	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
+	agg := provision(t, server)
+	svc := createService(t, server, agg.ServiceCollectionEndpoint, validServiceRequest(t))
+
+	// Every JSON / JSON-LD read endpoint should negotiate identically.
+	endpoints := []string{
+		"/",            // server description (application/json)
+		"/transformations", // transformation catalog (application/ld+json)
+		mustPath(agg.ID),                        // aggregator description
+		mustPath(agg.ServiceCollectionEndpoint), // service collection
+		mustPath(svc.ID),                        // service description
+	}
+	for _, path := range endpoints {
+		for _, accept := range []string{"", "*/*", "application/*", "application/json", "application/ld+json"} {
+			rec := requestWithAccept(server, http.MethodGet, path, "valid-management-token", accept)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s Accept %q: status = %d, want 200", path, accept, rec.Code)
+			}
+		}
+		for _, accept := range []string{"text/turtle", "image/png", "application/json;q=0"} {
+			rec := requestWithAccept(server, http.MethodGet, path, "valid-management-token", accept)
+			if rec.Code != http.StatusNotAcceptable {
+				t.Fatalf("GET %s Accept %q: status = %d, want 406", path, accept, rec.Code)
+			}
+		}
+	}
+
+	// POST provision negotiates before creating anything.
+	provisionRec := postWithAccept(server, "/registration", "application/json",
+		[]byte(`{"management_flow":"provision"}`), "valid-management-token", "text/turtle")
+	if provisionRec.Code != http.StatusNotAcceptable {
+		t.Fatalf("POST /registration Accept text/turtle: status = %d, want 406", provisionRec.Code)
+	}
+
+	// POST create service negotiates before materializing.
+	createRec := postWithAccept(server, mustPath(agg.ServiceCollectionEndpoint), "application/json",
+		[]byte(validServiceRequest(t)), "valid-management-token", "image/png")
+	if createRec.Code != http.StatusNotAcceptable {
+		t.Fatalf("POST service collection Accept image/png: status = %d, want 406", createRec.Code)
+	}
+}
+
+func postWithAccept(server *httpapi.Server, path, contentType string, body []byte, token, accept string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	server.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestServiceDeploymentAcceptsJSONLD(t *testing.T) {
+	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
+	agg := provision(t, server)
+	rec := request(server, http.MethodPost, mustPath(agg.ServiceCollectionEndpoint), "application/ld+json", []byte(jsonldServiceRequest(t)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("JSON-LD service create status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+	var desc httpapi.ServiceDescription
+	if err := json.Unmarshal(rec.Body.Bytes(), &desc); err != nil {
+		t.Fatalf("JSON-LD service create response must be JSON-LD: %v", err)
+	}
+	if desc.Transformation != "https://aggregator.example/transformations#MediaProfileAggregation" {
+		t.Fatalf("JSON-LD deployment mapped to unexpected transformation: %#v", desc)
+	}
+}
+
+// The user's client posted a JSON-LD body with a generic application/json
+// content type; the server should detect and accept it instead of rejecting it
+// as an invalid flat service request.
+func TestServiceDeploymentDetectsJSONLDPostedAsJSON(t *testing.T) {
+	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
+	agg := provision(t, server)
+	rec := request(server, http.MethodPost, mustPath(agg.ServiceCollectionEndpoint), "application/json", []byte(jsonldServiceRequest(t)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("JSON-LD-as-JSON create status = %d, want 201; body: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1395,6 +1511,19 @@ func validServiceRequest(t *testing.T) string {
 	return serviceRequest(t, "SELECT * WHERE { ?s ?p ?o }")
 }
 
+func requestWithAccept(server *httpapi.Server, method, path, token, accept string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	server.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
 func serviceRequest(t *testing.T, query string) string {
 	t.Helper()
 
@@ -1468,6 +1597,18 @@ func writeIndexedProfile(t *testing.T, path string, index int) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write profile fixture: %v", err)
 	}
+}
+
+func jsonldServiceRequest(t *testing.T) string {
+	t.Helper()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	sourcePath := filepath.Join(wd, "..", "fixtures", "source.nt")
+	sourceURL := url.URL{Scheme: "file", Path: sourcePath}
+	return fmt.Sprintf(`{"@context":{"aggr":"https://w3id.org/aggregator#","fno":"https://w3id.org/function/ontology#","fnoc":"https://w3id.org/function/vocabulary/composition#"},"@type":"aggr:Service","aggr:performs":{"@id":"https://aggregator.example/transformations#MediaProfileAggregation"},"aggr:applies":{"@type":"fno:AppliedFunction","fnoc:applies":{"@id":"https://aggregator.example/transformations#MediaProfileAggregation"},"fnoc:parameterBindings":{"@list":[{"fnoc:boundParameter":{"@id":"https://aggregator.example/transformations#Source"},"fnoc:boundToTerm":{"@id":%q}}]}}}`, sourceURL.String())
 }
 
 func turtleServiceRequest(t *testing.T, query string) string {

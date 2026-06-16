@@ -234,12 +234,21 @@ func (s *Server) Routes() http.Handler {
 			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 			return
 		}
+		if !negotiateJSON(w, r) {
+			return
+		}
 		writeJSON(w, http.StatusOK, BuildServerDescription(s.cfg))
 	})
 	mux.HandleFunc(s.cfg.ClientIdentifierPath, getOnly(func(w http.ResponseWriter, r *http.Request) {
+		if !negotiateJSONLD(w, r) {
+			return
+		}
 		writeJSONLD(w, http.StatusOK, BuildClientIdentifierDocument(s.cfg))
 	}))
 	mux.HandleFunc(s.cfg.TransformationCatalogPath, getOnly(func(w http.ResponseWriter, r *http.Request) {
+		if !negotiateJSONLD(w, r) {
+			return
+		}
 		writeJSONLD(w, http.StatusOK, BuildTransformationCatalog(s.cfg))
 	}))
 	mux.HandleFunc(s.cfg.ManagementEndpointPath, s.handleRegistration)
@@ -332,6 +341,9 @@ func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAggregators(w http.ResponseWriter, r *http.Request) {
+	if !negotiateJSON(w, r) {
+		return
+	}
 	ownerToken := bearerToken(r.Header.Get("Authorization"))
 	if !s.acceptProvisionToken(ownerToken) {
 		w.Header().Set("WWW-Authenticate", `Bearer scope="read"`)
@@ -342,6 +354,9 @@ func (s *Server) handleListAggregators(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
+	if !negotiateJSON(w, r) {
+		return
+	}
 	ownerToken := bearerToken(r.Header.Get("Authorization"))
 	if !s.acceptProvisionToken(ownerToken) {
 		w.Header().Set("WWW-Authenticate", `Bearer scope="create"`)
@@ -372,9 +387,25 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	desc := BuildAggregatorDescription(s.cfg, agg)
-	w.Header().Set("Location", desc.ID)
-	writeJSON(w, http.StatusCreated, desc)
+
+	aggregatorURL := s.cfg.absolute("/aggregators/" + agg.ID)
+	resp := ManagementResponse{
+		Aggregator: aggregatorURL,
+		Subject:    agg.Subject,
+	}
+	if !isWebID(agg.Subject) {
+		resp.IDP = s.cfg.provisionIDP()
+	}
+	w.Header().Set("Location", aggregatorURL)
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func isWebID(subject string) bool {
+	parsed, err := url.Parse(subject)
+	if err != nil {
+		return false
+	}
+	return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
 }
 
 func (s *Server) acceptProvisionToken(token string) bool {
@@ -423,6 +454,9 @@ func (s *Server) handleAggregator(w http.ResponseWriter, r *http.Request) {
 	if len(segments) == 1 {
 		switch r.Method {
 		case http.MethodGet:
+			if !negotiateJSON(w, r) {
+				return
+			}
 			writeJSON(w, http.StatusOK, BuildAggregatorDescription(s.cfg, agg))
 		case http.MethodDelete:
 			if bearerToken(r.Header.Get("Authorization")) != agg.OwnerToken {
@@ -441,6 +475,9 @@ func (s *Server) handleAggregator(w http.ResponseWriter, r *http.Request) {
 
 	if len(segments) == 2 && segments[1] == "transformations" {
 		getOnly(func(w http.ResponseWriter, r *http.Request) {
+			if !negotiateJSONLD(w, r) {
+				return
+			}
 			writeJSONLD(w, http.StatusOK, BuildInstanceTransformationCatalog(s.cfg, aggID, s.serviceList(aggID)))
 		})(w, r)
 		return
@@ -472,12 +509,17 @@ func (s *Server) createAggregator(ownerToken string) (aggregatorInstance, error)
 	id := "agg-" + strconv.Itoa(s.nextID)
 	s.nextID++
 	now := s.now().UTC()
+
+	tokenExpiry := now.Add(time.Hour)
+	if expiry, ok := idTokenExpiry(s.accountAccessToken); ok {
+		tokenExpiry = expiry
+	}
 	agg := aggregatorInstance{
 		ID:          id,
 		Subject:     subjectFromBearer(ownerToken, s.cfg.provisionSubject()),
 		OwnerToken:  ownerToken,
 		CreatedAt:   now,
-		TokenExpiry: now.Add(time.Hour),
+		TokenExpiry: tokenExpiry,
 	}
 	log.Printf("Created aggregator %s for subject %s", agg.ID, agg.Subject)
 	s.aggregators[id] = agg
@@ -515,8 +557,14 @@ type createServiceRequest struct {
 func (s *Server) handleServiceCollection(w http.ResponseWriter, r *http.Request, aggID string) {
 	switch r.Method {
 	case http.MethodHead:
+		if !negotiateJSONLD(w, r) {
+			return
+		}
 		s.writeServiceCollectionHeaders(w, aggID)
 	case http.MethodGet:
+		if !negotiateJSONLD(w, r) {
+			return
+		}
 		s.writeServiceCollectionHeaders(w, aggID)
 		writeJSONLD(w, http.StatusOK, BuildServiceCollection(s.cfg, aggID, s.serviceList(aggID)))
 	case http.MethodPost:
@@ -528,6 +576,9 @@ func (s *Server) handleServiceCollection(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, aggID string) {
+	if !negotiateJSONLD(w, r) {
+		return
+	}
 	serviceCollectionURL := s.cfg.absolute("/aggregators/" + aggID + "/services")
 	authorized, err := s.requireLiveUMAPermission(w, r, serviceCollectionURL, []string{scopeCreate})
 	if err != nil {
@@ -609,9 +660,26 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 
 func (s *Server) parseCreateServiceRequest(r *http.Request) (createServiceRequest, error) {
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
+	if contentType == "application/ld+json" {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return createServiceRequest{}, err
+		}
+		return parseCreateServiceRequestJSONLD(s.cfg, body)
+	}
 	if contentType == "" || contentType == "application/json" {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return createServiceRequest{}, err
+		}
+		// A JSON-LD deployment may arrive with a generic application/json content
+		// type; detect and route it to the JSON-LD parser so its nested applied
+		// function data is not dropped by the flat {transformation, source_urls} decode.
+		if looksLikeJSONLD(body) {
+			return parseCreateServiceRequestJSONLD(s.cfg, body)
+		}
 		var req createServiceRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.Unmarshal(body, &req); err != nil {
 			return createServiceRequest{}, err
 		}
 		return req, nil
@@ -644,6 +712,9 @@ func (s *Server) handleServiceDescription(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
+	if !negotiateJSONLD(w, r) {
+		return
+	}
 	writeJSONLD(w, http.StatusOK, BuildServiceDescription(s.cfg, svc))
 }
 
@@ -669,6 +740,19 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 	svc, ok := s.service(aggID, serviceID)
 	if !ok {
 		http.NotFound(w, r)
+		return
+	}
+
+	// Content negotiation: the service has exactly one representation on disk
+	// (Turtle for CONSTRUCT, SPARQL-JSON for SELECT). If the client's Accept
+	// header excludes that type, reject up front with 406 instead of doing
+	// (re)materialization work and returning a surprising body.
+	producedMediaType := svc.OutputMediaType
+	if producedMediaType == "" {
+		producedMediaType = outputMediaTypeForQueryType(svc.QueryType)
+	}
+	if !acceptsMediaType(r.Header.Get("Accept"), producedMediaType) {
+		http.Error(w, fmt.Sprintf("service output is only available as %s", producedMediaType), http.StatusNotAcceptable)
 		return
 	}
 
@@ -746,13 +830,142 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 		}
 	}
 	w.Header().Set("Link", "<"+serviceURL(s.cfg, aggID, serviceID)+">; rel=\"aggr:fromService\"")
-	w.Header().Set("Content-Type", svc.OutputMediaType)
-	http.ServeFile(w, r, svc.OutputPath)
+	s.serveMaterializedOutput(w, r, svc)
+}
+
+// serveMaterializedOutput streams the materialized output file verbatim with its
+// own RDF/SPARQL media type (e.g. text/turtle, application/sparql-results+json).
+// We deliberately avoid http.ServeFile and any JSON encoding so a Turtle document
+// is returned as raw text/turtle bytes rather than a content-sniffed or
+// JSON.stringify'd body. Setting Content-Type explicitly before writing also
+// suppresses net/http's content sniffing.
+func (s *Server) serveMaterializedOutput(w http.ResponseWriter, r *http.Request, svc serviceInstance) {
+	mediaType := svc.OutputMediaType
+	if mediaType == "" {
+		mediaType = outputMediaTypeForQueryType(svc.QueryType)
+	}
+	w.Header().Set("Content-Type", mediaType)
+
+	if svc.OutputPath == "" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	body, err := os.ReadFile(svc.OutputPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "reading materialized output failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// acceptsMediaType reports whether an Accept header value permits the given
+// concrete media type. An empty/absent Accept header means the client accepts
+// anything (RFC 9110 §12.5.1). It honors `*/*` and `type/*` wildcards and q=0
+// exclusions, picking the most specific matching media range (with q as a
+// tiebreaker) since the endpoint only ever has a single representation to offer.
+func acceptsMediaType(accept, mediaType string) bool {
+	accept = strings.TrimSpace(accept)
+	if accept == "" {
+		return true
+	}
+	wantType, wantSub, ok := splitMediaRange(mediaType)
+	if !ok {
+		return true
+	}
+	bestSpecificity := -1
+	bestQ := 0.0
+	matched := false
+	for _, part := range strings.Split(accept, ",") {
+		fields := strings.Split(part, ";")
+		rType, rSub, ok := splitMediaRange(fields[0])
+		if !ok {
+			continue
+		}
+		if rType != "*" && rType != wantType {
+			continue
+		}
+		if rSub != "*" && rSub != wantSub {
+			continue
+		}
+		specificity := 0
+		if rType != "*" {
+			specificity++
+		}
+		if rSub != "*" {
+			specificity++
+		}
+		q := 1.0
+		for _, param := range fields[1:] {
+			param = strings.TrimSpace(param)
+			if strings.HasPrefix(strings.ToLower(param), "q=") {
+				if parsed, err := strconv.ParseFloat(strings.TrimSpace(param[2:]), 64); err == nil {
+					q = parsed
+				}
+			}
+		}
+		if specificity > bestSpecificity || (specificity == bestSpecificity && q > bestQ) {
+			bestSpecificity = specificity
+			bestQ = q
+		}
+		matched = true
+	}
+	if !matched {
+		return false
+	}
+	return bestQ > 0
+}
+
+// splitMediaRange splits a media type or media range into its type and subtype,
+// discarding any parameters (e.g. charset). It returns ok=false for malformed
+// values so callers can treat them leniently.
+func splitMediaRange(value string) (string, string, bool) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if idx := strings.IndexByte(value, ';'); idx >= 0 {
+		value = strings.TrimSpace(value[:idx])
+	}
+	slash := strings.IndexByte(value, '/')
+	if slash <= 0 || slash == len(value)-1 {
+		return "", "", false
+	}
+	return value[:slash], value[slash+1:], true
+}
+
+// negotiate enforces content negotiation for endpoints with a fixed response
+// representation. compatible lists the concrete media types the response can
+// satisfy; the first entry is the type that will actually be sent. If the
+// client's Accept header permits none of them, negotiate writes a 406 and
+// returns false. An empty/absent Accept header always passes.
+func negotiate(w http.ResponseWriter, r *http.Request, compatible ...string) bool {
+	accept := r.Header.Get("Accept")
+	for _, mediaType := range compatible {
+		if acceptsMediaType(accept, mediaType) {
+			return true
+		}
+	}
+	http.Error(w, fmt.Sprintf("representation is only available as %s", strings.Join(compatible, ", ")), http.StatusNotAcceptable)
+	return false
+}
+
+// negotiateJSON / negotiateJSONLD gate the JSON and JSON-LD endpoints. JSON-LD
+// is valid JSON, so each treats the other as an acceptable alias to stay
+// interoperable with clients that send only `application/json`.
+func negotiateJSON(w http.ResponseWriter, r *http.Request) bool {
+	return negotiate(w, r, "application/json", "application/ld+json")
+}
+
+func negotiateJSONLD(w http.ResponseWriter, r *http.Request) bool {
+	return negotiate(w, r, "application/ld+json", "application/json")
 }
 
 func (s *Server) writeServiceCollectionHeaders(w http.ResponseWriter, aggID string) {
 	w.Header().Set("ETag", s.serviceCollectionETag(aggID))
-	w.Header().Set("Accept-Post", "application/json, text/turtle")
+	w.Header().Set("Accept-Post", "application/json, application/ld+json, text/turtle")
 }
 
 func (s *Server) serviceList(aggID string) []serviceInstance {
