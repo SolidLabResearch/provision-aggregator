@@ -604,7 +604,7 @@ func TestMilestone10OutputPermissionTicketComesFromAuthorizationServer(t *testin
 				t.Fatalf("decode UAS derivation resource: %v", err)
 			}
 			scopes, _ := body["resource_scopes"].([]any)
-			if body["name"] != "Derived resource" ||
+			if body["name"] != "Aggregator Media Profile" ||
 				len(scopes) != 1 || scopes[0] != "urn:knows:uma:scopes:read" {
 				t.Fatalf("UAS derivation resource body = %#v", body)
 			}

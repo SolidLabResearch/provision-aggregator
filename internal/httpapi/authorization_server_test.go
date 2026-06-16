@@ -340,6 +340,7 @@ func TestStartupSynchronizesAuthorizationPoliciesForManagedAssets(t *testing.T) 
 	cfg.AccountEmail = "alice@example.com"
 	cfg.AccountPassword = "password"
 	cfg.AccountWebID = "https://pod.example/alice#me"
+	cfg.Subject = "https://aggregator.example/profile/agg#me"
 	cfg.AuthorizationServerURL = "https://as.example/uma"
 	cfg.AuthorizationServerTokenEndpoint = "https://as.example/uma/token"
 	cfg.AuthorizationServerPermissionEndpoint = "https://as.example/uma/permission"

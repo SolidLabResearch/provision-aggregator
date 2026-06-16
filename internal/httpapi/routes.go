@@ -1713,6 +1713,9 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 			continue
 		}
 		sources = append(sources, source.Metadata)
+		if source.UpstreamDerivation.hasData() {
+			upstreamDerivations = appendUniqueUpstreamDerivation(upstreamDerivations, source.UpstreamDerivation)
+		}
 		if err := loadStagedSource(s.cfg.OxigraphBinary, storeDir, source); err != nil {
 			log.Printf("httpapi: failed to load index source %s into oxigraph: %v", sourceURL, err)
 			lastSourceErr = err
