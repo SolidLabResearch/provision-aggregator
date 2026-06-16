@@ -2,40 +2,32 @@ package httpapi
 
 import "time"
 
+// Hosted JSON-LD contexts for the Aggregator Server Description and the
+// Aggregator Description. The inline contexts were replaced by references to
+// these hosted documents (see the spec sections on aggregator-server and
+// aggregator metadata).
+const (
+	serverDescriptionContext     = "https://w3id.org/aggregator/contexts/aggregator-server-description.jsonld"
+	aggregatorDescriptionContext = "https://w3id.org/aggregator/contexts/aggregator-description.jsonld"
+)
+
 type ServerDescription struct {
-	Context                           map[string]any `json:"@context"`
-	ID                                string         `json:"@id"`
-	Type                              string         `json:"@type"`
-	ManagementEndpoint                string         `json:"registrationEndpoint"`
-	SupportedManagementFlows          []string       `json:"supportedRegistrationType"`
-	SupportedManagementRequestFormats []string       `json:"registrationRequestFormatSupported"`
-	Version                           string         `json:"specVersion"`
-	ClientIdentifier                  string         `json:"clientIdentifier"`
-	TransformationCatalog             string         `json:"transformationCatalog"`
+	Context                           string   `json:"@context"`
+	ID                                string   `json:"aggregator_server_base_url"`
+	Type                              string   `json:"type"`
+	ManagementEndpoint                string   `json:"management_endpoint"`
+	SupportedManagementFlows          []string `json:"supported_management_flows"`
+	SupportedManagementRequestFormats []string `json:"supported_management_request_formats"`
+	Version                           string   `json:"version"`
+	ClientIdentifier                  string   `json:"client_identifier"`
+	TransformationCatalog             string   `json:"transformation_catalog"`
 }
 
 func BuildServerDescription(cfg Config) ServerDescription {
 	return ServerDescription{
-		Context: map[string]any{
-			"aggr": "https://w3id.org/aggregator#",
-			"registrationEndpoint": map[string]string{
-				"@id":   "aggr:registrationEndpoint",
-				"@type": "@id",
-			},
-			"supportedRegistrationType":          "aggr:supportedRegistrationType",
-			"registrationRequestFormatSupported": "aggr:registrationRequestFormatSupported",
-			"specVersion":                        "aggr:specVersion",
-			"clientIdentifier": map[string]string{
-				"@id":   "aggr:clientIdentifier",
-				"@type": "@id",
-			},
-			"transformationCatalog": map[string]string{
-				"@id":   "aggr:transformationCatalog",
-				"@type": "@id",
-			},
-		},
+		Context:                           serverDescriptionContext,
 		ID:                                cfg.absolute("/"),
-		Type:                              "aggr:AggregatorServer",
+		Type:                              "AggregatorServer",
 		ManagementEndpoint:                cfg.absolute(cfg.ManagementEndpointPath),
 		SupportedManagementFlows:          append([]string(nil), cfg.SupportedManagementFlows...),
 		SupportedManagementRequestFormats: append([]string(nil), cfg.SupportedManagementFormats...),
@@ -46,15 +38,19 @@ func BuildServerDescription(cfg Config) ServerDescription {
 }
 
 type AggregatorDescription struct {
-	Context                   map[string]any `json:"@context"`
-	ID                        string         `json:"@id"`
-	Type                      string         `json:"@type"`
-	Subject                   string         `json:"subject"`
-	CreatedAt                 string         `json:"createdAt"`
-	LoginStatus               bool           `json:"loginStatus"`
-	TokenExpiry               string         `json:"tokenExpiry,omitempty"`
-	TransformationCatalog     string         `json:"transformationsEndpoint"`
-	ServiceCollectionEndpoint string         `json:"serviceCollectionEndpoint"`
+	Context                   string `json:"@context"`
+	ID                        string `json:"aggregator_base_url"`
+	Type                      string `json:"type"`
+	// Subject is not part of the Aggregator Description proper, but the
+	// provision management flow reuses this representation and MUST report the
+	// subject (WebID or Client_ID) the OIDC tokens were created for. The spec
+	// permits additional members, so it is emitted as an extra field.
+	Subject                   string `json:"subject,omitempty"`
+	CreatedAt                 string `json:"created_at"`
+	LoginStatus               bool   `json:"login_status"`
+	TokenExpiry               string `json:"token_expiry,omitempty"`
+	TransformationCatalog     string `json:"transformation_catalog"`
+	ServiceCollectionEndpoint string `json:"service_collection_endpoint"`
 }
 
 type aggregatorInstance struct {
@@ -68,23 +64,9 @@ type aggregatorInstance struct {
 func BuildAggregatorDescription(cfg Config, agg aggregatorInstance) AggregatorDescription {
 	aggregatorURL := cfg.absolute("/aggregators/" + agg.ID)
 	return AggregatorDescription{
-		Context: map[string]any{
-			"aggr":        "https://w3id.org/aggregator#",
-			"subject":     "aggr:subject",
-			"createdAt":   "aggr:createdAt",
-			"loginStatus": "aggr:loginStatus",
-			"tokenExpiry": "aggr:tokenExpiry",
-			"transformationsEndpoint": map[string]string{
-				"@id":   "aggr:transformationsEndpoint",
-				"@type": "@id",
-			},
-			"serviceCollectionEndpoint": map[string]string{
-				"@id":   "aggr:serviceCollectionEndpoint",
-				"@type": "@id",
-			},
-		},
+		Context:                   aggregatorDescriptionContext,
 		ID:                        aggregatorURL,
-		Type:                      "aggr:Aggregator",
+		Type:                      "Aggregator",
 		Subject:                   agg.Subject,
 		CreatedAt:                 agg.CreatedAt.UTC().Format(time.RFC3339),
 		LoginStatus:               true,

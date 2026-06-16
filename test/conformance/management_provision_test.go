@@ -54,8 +54,8 @@ func TestAGGRINST002(t *testing.T) {
 	if desc.ID == "" {
 		t.Fatalf("id is required")
 	}
-	if desc.Type != "aggr:Aggregator" {
-		t.Fatalf("@type = %q, want aggr:Aggregator", desc.Type)
+	if desc.Type != "Aggregator" {
+		t.Fatalf("type = %q, want Aggregator", desc.Type)
 	}
 	if desc.CreatedAt == "" {
 		t.Fatalf("created_at is required")

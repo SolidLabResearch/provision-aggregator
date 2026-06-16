@@ -17,8 +17,8 @@ func TestAGGRSERVER001(t *testing.T) {
 	if desc.ID != "https://aggregator.example/" {
 		t.Fatalf("@id = %q, want absolute server URL", desc.ID)
 	}
-	if desc.Type != "aggr:AggregatorServer" {
-		t.Fatalf("@type = %q, want aggr:AggregatorServer", desc.Type)
+	if desc.Type != "AggregatorServer" {
+		t.Fatalf("type = %q, want AggregatorServer", desc.Type)
 	}
 	if _, err := json.Marshal(desc); err != nil {
 		t.Fatalf("server description must be JSON serializable: %v", err)
