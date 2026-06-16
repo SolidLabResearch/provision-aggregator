@@ -33,7 +33,7 @@ func TestAGGRMGMT016(t *testing.T) {
 	if deleteRec.Code != http.StatusNoContent {
 		t.Fatalf("DELETE aggregator status = %d, want 204", deleteRec.Code)
 	}
-	rec := request(server, http.MethodGet, "/registration", "", nil)
+	rec := requestWithBearer(server, http.MethodGet, "/registration", "", nil, "valid-management-token")
 	var aggregators []httpapi.AggregatorDescription
 	if err := json.Unmarshal(rec.Body.Bytes(), &aggregators); err != nil {
 		t.Fatalf("management GET must return JSON array: %v", err)
@@ -190,7 +190,7 @@ func assertInvalidManagementRequest(t *testing.T, body string) {
 func assertNoAggregators(t *testing.T, server *httpapi.Server) {
 	t.Helper()
 
-	rec := request(server, http.MethodGet, "/registration", "", nil)
+	rec := requestWithBearer(server, http.MethodGet, "/registration", "", nil, "valid-management-token")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("aggregator list status = %d, want 200", rec.Code)
 	}

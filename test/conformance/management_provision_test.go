@@ -151,7 +151,7 @@ func TestAGGRMGMT004(t *testing.T) {
 	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
 	provision(t, server)
 
-	rec := request(server, http.MethodGet, "/registration", "", nil)
+	rec := requestWithBearer(server, http.MethodGet, "/registration", "", nil, "valid-management-token")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /registration status = %d, want 200", rec.Code)
 	}
@@ -161,6 +161,42 @@ func TestAGGRMGMT004(t *testing.T) {
 	}
 	if len(aggregators) != 1 {
 		t.Fatalf("management GET returned %d aggregators, want 1", len(aggregators))
+	}
+}
+
+func TestManagementListRequiresAuthentication(t *testing.T) {
+	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
+	provision(t, server)
+
+	rec := request(server, http.MethodGet, "/registration", "", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated GET /registration status = %d, want 401", rec.Code)
+	}
+	if rec.Header().Get("WWW-Authenticate") == "" {
+		t.Fatalf("401 response must include WWW-Authenticate header")
+	}
+}
+
+func TestManagementListIsScopedToTokenOwner(t *testing.T) {
+	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
+	owned := provision(t, server)
+
+	// A different user's token must not see another user's aggregators.
+	rec := requestWithBearer(server, http.MethodGet, "/registration", "", nil, "other-management-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /registration status = %d, want 200", rec.Code)
+	}
+	var aggregators []httpapi.AggregatorDescription
+	if err := json.Unmarshal(rec.Body.Bytes(), &aggregators); err != nil {
+		t.Fatalf("management GET must return JSON array: %v", err)
+	}
+	for _, agg := range aggregators {
+		if agg.ID == owned.ID {
+			t.Fatalf("management GET leaked another user's aggregator %q to unrelated token", owned.ID)
+		}
+	}
+	if len(aggregators) != 0 {
+		t.Fatalf("management GET returned %d aggregators for unrelated token, want 0", len(aggregators))
 	}
 }
 
@@ -216,7 +252,7 @@ func TestAGGRMGMT014(t *testing.T) {
 	server := httpapi.NewServer(httpapi.DefaultConfig("https://aggregator.example"))
 	desc := provision(t, server)
 
-	rec := request(server, http.MethodGet, "/registration", "", nil)
+	rec := requestWithBearer(server, http.MethodGet, "/registration", "", nil, "valid-management-token")
 	var aggregators []httpapi.AggregatorDescription
 	if err := json.Unmarshal(rec.Body.Bytes(), &aggregators); err != nil {
 		t.Fatalf("management GET must return JSON array: %v", err)

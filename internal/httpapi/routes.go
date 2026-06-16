@@ -322,13 +322,23 @@ type registrationRequest struct {
 func (s *Server) handleRegistration(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		s.writeAggregatorList(w)
+		s.handleListAggregators(w, r)
 	case http.MethodPost:
 		s.handleProvision(w, r)
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleListAggregators(w http.ResponseWriter, r *http.Request) {
+	ownerToken := bearerToken(r.Header.Get("Authorization"))
+	if !s.acceptProvisionToken(ownerToken) {
+		w.Header().Set("WWW-Authenticate", `Bearer scope="read"`)
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+	s.writeAggregatorList(w, ownerToken)
 }
 
 func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
@@ -371,11 +381,18 @@ func (s *Server) acceptProvisionToken(token string) bool {
 	return token != "" && token != "invalid-management-token"
 }
 
-func (s *Server) writeAggregatorList(w http.ResponseWriter) {
+func (s *Server) writeAggregatorList(w http.ResponseWriter, ownerToken string) {
+	// Only list aggregators owned by the user behind the supplied token. The
+	// owner is identified by an exact owner-token match or, for JWT access
+	// tokens, by the token's subject claim.
+	subject := subjectFromBearer(ownerToken, "")
+
 	s.mu.Lock()
 	aggregators := make([]aggregatorInstance, 0, len(s.aggregators))
 	for _, agg := range s.aggregators {
-		aggregators = append(aggregators, agg)
+		if agg.OwnerToken == ownerToken || (subject != "" && agg.Subject == subject) {
+			aggregators = append(aggregators, agg)
+		}
 	}
 	s.mu.Unlock()
 
@@ -553,7 +570,7 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 				return
 			}
 			svc := s.createService(aggID, serviceID, req, queryType, output, asset, "ready", "", nil)
-			s.startSourceAvailabilityPolling(aggID, serviceID, req, queryType)
+			s.startSourceAvailabilityPolling(aggID, serviceID, req, queryType, inaccessibleSourceURLs(err))
 			desc := BuildServiceDescription(s.cfg, svc)
 			w.Header().Set("Location", desc.ID)
 			writeJSONLD(w, http.StatusCreated, desc)
@@ -691,7 +708,7 @@ func (s *Server) handleServiceOutput(w http.ResponseWriter, r *http.Request, agg
 		if err != nil {
 			if isInsufficientUpstreamResources(err) {
 				s.markServiceFailed(aggID, serviceID, insufficientUpstreamResourcesMessage)
-				s.startSourceAvailabilityPolling(aggID, serviceID, req, svc.QueryType)
+				s.startSourceAvailabilityPolling(aggID, serviceID, req, svc.QueryType, inaccessibleSourceURLs(err))
 				http.Error(w, insufficientUpstreamResourcesMessage, http.StatusFailedDependency)
 				return
 			}
@@ -823,11 +840,13 @@ func (s *Server) applyMaterializedOutput(aggID, serviceID string, output materia
 }
 
 // startSourceAvailabilityPolling launches (at most one per service) a
-// background loop that re-attempts materialization every poll interval. This is
-// triggered whenever an upstream resource (index or profile source) cannot be
-// reached and an access request has been submitted: once that request is
-// accepted the resource becomes reachable and the output is materialized.
-func (s *Server) startSourceAvailabilityPolling(aggID, serviceID string, req createServiceRequest, queryType string) {
+// background loop that re-attempts materialization once a previously
+// inaccessible upstream resource (index or profile source) becomes reachable.
+// This is triggered whenever an access request has been submitted: rather than
+// re-fetching and re-loading every source on each tick, the loop probes only
+// the resources the aggregator does not yet have access to and re-materializes
+// the moment one of them is granted.
+func (s *Server) startSourceAvailabilityPolling(aggID, serviceID string, req createServiceRequest, queryType string, pending []string) {
 	s.mu.Lock()
 	if s.pollingServices == nil {
 		s.pollingServices = make(map[string]bool)
@@ -844,6 +863,7 @@ func (s *Server) startSourceAvailabilityPolling(aggID, serviceID string, req cre
 		Transformation: req.Transformation,
 		SourceURLs:     append([]string(nil), req.SourceURLs...),
 	}
+	pendingSources := append([]string(nil), pending...)
 
 	go func() {
 		defer func() {
@@ -858,10 +878,20 @@ func (s *Server) startSourceAvailabilityPolling(aggID, serviceID string, req cre
 			if _, ok := s.service(aggID, serviceID); !ok {
 				return
 			}
+			// Only re-attempt materialization once a previously inaccessible
+			// upstream resource has become reachable. This avoids re-fetching
+			// and re-loading sources the aggregator already has access to on
+			// every poll tick. When the inaccessible set is unknown we fall
+			// back to probing through a full materialization attempt.
+			if len(pendingSources) > 0 && !s.anyUpstreamSourceAccessible(pendingSources) {
+				continue
+			}
 			output, err := s.materialize(serviceID, reqCopy, queryType)
 			if err != nil {
 				if isInsufficientUpstreamResources(err) {
-					// Access request not accepted yet; keep polling.
+					// Some resources are still inaccessible; narrow the polling
+					// set to just those and keep waiting.
+					pendingSources = inaccessibleSourceURLs(err)
 					continue
 				}
 				log.Printf("httpapi: stopping availability polling for service %s: %v", serviceID, err)
@@ -875,6 +905,61 @@ func (s *Server) startSourceAvailabilityPolling(aggID, serviceID string, req cre
 			return
 		}
 	}()
+}
+
+// anyUpstreamSourceAccessible reports whether at least one of the given upstream
+// resources can now be accessed by the aggregator.
+func (s *Server) anyUpstreamSourceAccessible(urls []string) bool {
+	for _, rawURL := range urls {
+		if s.upstreamSourceAccessible(rawURL) {
+			return true
+		}
+	}
+	return false
+}
+
+// upstreamSourceAccessible performs a lightweight access probe for a single
+// upstream resource, negotiating UMA authorization if required. It does not
+// download or load the resource, so it is cheap enough to run on every poll
+// tick for the resources the aggregator still lacks access to.
+func (s *Server) upstreamSourceAccessible(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		// Local sources are always reachable.
+		return true
+	}
+	resp, err := s.requestHTTPSource(http.MethodHead, rawURL, "")
+	if err != nil {
+		return false
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+		return true
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return false
+	}
+	asURI, ticket, ok := parseUMAChallenge(resp.Challenge)
+	if !ok {
+		return false
+	}
+	if token := s.cachedUpstreamToken(rawURL, asURI); token != "" {
+		resp, err = s.requestHTTPSource(http.MethodHead, rawURL, token)
+		if err == nil && resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+			return true
+		}
+	}
+	upstreamToken, _, err := s.obtainUpstreamRPT(rawURL, asURI, ticket)
+	if err != nil {
+		return false
+	}
+	resp, err = s.requestHTTPSource(http.MethodHead, rawURL, upstreamToken)
+	if err != nil {
+		return false
+	}
+	return resp.StatusCode >= 200 && resp.StatusCode <= 299
 }
 
 func (s *Server) deleteService(aggID string, svc serviceInstance) error {
@@ -1547,8 +1632,9 @@ type inaccessibleSourceError struct {
 const insufficientUpstreamResourcesMessage = "not enough upstream resources can be accessed"
 
 type insufficientUpstreamResourcesError struct {
-	Accessible int
-	Total      int
+	Accessible   int
+	Total        int
+	Inaccessible []string
 }
 
 func (e insufficientUpstreamResourcesError) Error() string {
@@ -1558,6 +1644,18 @@ func (e insufficientUpstreamResourcesError) Error() string {
 func isInsufficientUpstreamResources(err error) bool {
 	var insufficient insufficientUpstreamResourcesError
 	return errors.As(err, &insufficient)
+}
+
+// inaccessibleSourceURLs extracts the upstream resource URLs that could not be
+// accessed during materialization. Availability polling uses this set to probe
+// only the resources the aggregator still lacks access to, instead of
+// re-fetching every source on each tick.
+func inaccessibleSourceURLs(err error) []string {
+	var insufficient insufficientUpstreamResourcesError
+	if errors.As(err, &insufficient) {
+		return append([]string(nil), insufficient.Inaccessible...)
+	}
+	return nil
 }
 
 func isInaccessibleSourceError(err error) bool {
@@ -1601,6 +1699,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	var upstreamDerivations []upstreamDerivationEvidence
 	var lastSourceErr error
 	var lastIndexAccessErr error
+	var inaccessibleIndexSources []string
 	accessibleIndexSources := 0
 	for i, sourceURL := range req.SourceURLs {
 		source, err := s.stageSource(stagingDir, i, sourceURL)
@@ -1609,6 +1708,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 			lastSourceErr = err
 			if isInaccessibleSourceError(err) {
 				lastIndexAccessErr = err
+				inaccessibleIndexSources = append(inaccessibleIndexSources, sourceURL)
 			}
 			continue
 		}
@@ -1628,8 +1728,9 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	// malformed/non-RDF index, oxigraph errors) keep their original handling.
 	if len(req.SourceURLs) > 0 && accessibleIndexSources == 0 && lastIndexAccessErr != nil {
 		return materializedOutput{}, insufficientUpstreamResourcesError{
-			Accessible: accessibleIndexSources,
-			Total:      len(req.SourceURLs),
+			Accessible:   accessibleIndexSources,
+			Total:        len(req.SourceURLs),
+			Inaccessible: inaccessibleIndexSources,
 		}
 	}
 
@@ -1642,6 +1743,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	}
 
 	accessibleProfileSources := 0
+	var inaccessibleProfileSources []string
 	if len(profileURLs) > 0 {
 		if err := os.RemoveAll(storeDir); err != nil {
 			return materializedOutput{}, err
@@ -1652,6 +1754,9 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 			if err != nil {
 				log.Printf("httpapi: failed to stage media profile source %s: %v", sourceURL, err)
 				lastSourceErr = err
+				if isInaccessibleSourceError(err) {
+					inaccessibleProfileSources = append(inaccessibleProfileSources, sourceURL)
+				}
 				continue
 			}
 			sources = append(sources, source.Metadata)
@@ -1669,8 +1774,9 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 
 	if !s.hasEnoughAccessibleProfileSources(accessibleProfileSources, len(profileURLs)) {
 		return materializedOutput{}, insufficientUpstreamResourcesError{
-			Accessible: accessibleProfileSources,
-			Total:      len(profileURLs),
+			Accessible:   accessibleProfileSources,
+			Total:        len(profileURLs),
+			Inaccessible: inaccessibleProfileSources,
 		}
 	}
 
