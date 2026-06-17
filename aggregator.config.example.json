@@ -1,5 +1,6 @@
 {
   "base_url": "http://localhost:8080",
+  "port": 8080,
   "account_server": "http://localhost:3000",
   "email": "my-email@example.com",
   "password": "my-password",
@@ -13,7 +14,7 @@
   "transformation_source_label": "Source",
   "transformation_output_fragment": "MediaProfile",
   "transformation_output_label": "MediaProfile",
-  "media_profile_index_query": "SELECT DISTINCT ?object WHERE {\n  ?subject <http://example.com/includes> ?object\n}",
+  "media_profile_index_query": "SELECT DISTINCT ?object WHERE {\n  $sourceIndex$ <http://example.com/includes> ?object\n}",
   "media_profile_query": "SELECT * WHERE {\n  ?s ?p ?o .\n}",
   "upstream_derivation_resource_name": "Aggregator Media Profile",
   "minimum_accessible_sources": 2,

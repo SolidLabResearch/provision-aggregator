@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 type Config struct {
 	BaseURL                                         string
+	Port                                            int
 	Version                                         string
 	ClientID                                        string
 	Subject                                         string
@@ -58,6 +60,7 @@ type Config struct {
 func DefaultConfig(baseURL string) Config {
 	return Config{
 		BaseURL:                      strings.TrimRight(baseURL, "/"),
+		Port:                         8080,
 		Version:                      "0.1.0",
 		ClientID:                     "aggregator-provision",
 		Subject:                      "https://aggregator.example/profile/card#me",
@@ -72,7 +75,7 @@ func DefaultConfig(baseURL string) Config {
 		TransformationOutputFragment: "MediaProfile",
 		TransformationOutputLabel:    "MediaProfile",
 		MediaProfileIndexQuery: `SELECT DISTINCT ?object WHERE {
-  ?subject <http://example.com/includes> ?object
+  $sourceIndex$ <http://example.com/includes> ?object
 }`,
 		MediaProfileQuery: `SELECT * WHERE {
   ?s ?p ?o .
@@ -100,6 +103,27 @@ func (c Config) absolute(path string) string {
 		return baseURL
 	}
 	return baseURL + "/" + strings.TrimLeft(path, "/")
+}
+
+// listenPort is the local TCP port the HTTP server binds to. It is independent
+// of BaseURL, which is the public address advertised behind a reverse proxy
+// (e.g. https://example.org/aggregator).
+func (c Config) listenPort() int {
+	if c.Port == 0 {
+		return 8080
+	}
+	return c.Port
+}
+
+// ListenAddr returns the address passed to http.Server.Addr (e.g. ":8080").
+func (c Config) ListenAddr() string {
+	return fmt.Sprintf(":%d", c.listenPort())
+}
+
+// LocalURL is the loopback URL the server is reachable on locally, used for
+// startup logging since BaseURL points at the public reverse-proxy address.
+func (c Config) LocalURL() string {
+	return fmt.Sprintf("http://localhost:%d", c.listenPort())
 }
 
 func (c Config) routePrefix() string {
@@ -170,7 +194,7 @@ func (c Config) transformationOutputLabel() string {
 
 func (c Config) mediaProfileIndexQuery() string {
 	return defaultString(c.MediaProfileIndexQuery, `SELECT DISTINCT ?object WHERE {
-  ?subject <http://example.com/includes> ?object
+  $sourceIndex$ <http://example.com/includes> ?object
 }`)
 }
 

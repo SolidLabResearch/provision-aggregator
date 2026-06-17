@@ -528,12 +528,14 @@ func (s *Server) createAggregator(ownerToken string) (aggregatorInstance, error)
 	s.mu.Unlock()
 
 	if err := s.registerAggregatorResourcesAtAuthorizationServer(agg); err != nil {
+		log.Printf("httpapi: authorization server registration failed for aggregator %s: %v", agg.ID, err)
 		return aggregatorInstance{}, err
 	}
 	return agg, nil
 }
 
 func (s *Server) deleteAggregator(aggID string) {
+	log.Printf("httpapi: deleting aggregator %s and its services", aggID)
 	resources := []string{
 		s.cfg.absolute("/aggregators/" + aggID),
 		s.cfg.absolute("/aggregators/" + aggID + "/transformations"),
@@ -607,16 +609,20 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 	}
 
 	serviceID := s.reserveServiceID()
+	log.Printf("httpapi: creating service %s for aggregator %s (%d source(s), query type %s)", serviceID, aggID, len(req.SourceURLs), queryType)
 	output, err := s.materialize(serviceID, req, queryType)
 	if err != nil {
 		if serviceCanBeCreatedWithoutInitialMaterialization(err) {
+			log.Printf("httpapi: service %s created without initial materialization, %d source(s) still inaccessible; starting availability polling", serviceID, len(inaccessibleSourceURLs(err)))
 			output = materializedOutput{MediaType: outputMediaTypeForQueryType(queryType)}
 			if err := s.registerServiceResource(aggID, serviceID); err != nil {
+				log.Printf("httpapi: authorization server registration failed for service %s: %v", serviceID, err)
 				http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
 				return
 			}
 			asset, err := s.registerOutputAsset(aggID, serviceID, output)
 			if err != nil {
+				log.Printf("httpapi: output asset registration failed for service %s: %v", serviceID, err)
 				http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
 				return
 			}
@@ -631,16 +637,19 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 		if strings.Contains(err.Error(), "oxigraph") {
 			status = http.StatusInternalServerError
 		}
+		log.Printf("httpapi: materialization failed for service %s: %v", serviceID, err)
 		http.Error(w, "materialization failed: "+err.Error(), status)
 		return
 	}
 
 	if err := s.registerServiceResource(aggID, serviceID); err != nil {
+		log.Printf("httpapi: authorization server registration failed for service %s: %v", serviceID, err)
 		http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	asset, err := s.registerOutputAsset(aggID, serviceID, output)
 	if err != nil {
+		log.Printf("httpapi: output asset registration failed for service %s: %v", serviceID, err)
 		http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -650,9 +659,11 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 	if err != nil {
 		status = "failed"
 		errorMessage = err.Error()
+		log.Printf("httpapi: service %s materialized but derivedFrom update failed: %v", serviceID, err)
 	}
 
 	svc := s.createService(aggID, serviceID, req, queryType, output, asset, status, errorMessage, derivedFrom)
+	log.Printf("httpapi: service %s for aggregator %s created with status %q", serviceID, aggID, status)
 	desc := BuildServiceDescription(s.cfg, svc)
 	w.Header().Set("Location", desc.ID)
 	writeJSONLD(w, http.StatusCreated, desc)
@@ -725,9 +736,11 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request, agg
 		return
 	}
 	if err := s.deleteService(aggID, svc); err != nil {
+		log.Printf("httpapi: service cleanup failed for service %s (aggregator %s): %v", serviceID, aggID, err)
 		http.Error(w, "service cleanup failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("httpapi: deleted service %s for aggregator %s", serviceID, aggID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1913,6 +1926,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	var lastSourceErr error
 	var lastIndexAccessErr error
 	var inaccessibleIndexSources []string
+	var indexSourceURLs []string
 	accessibleIndexSources := 0
 	for i, sourceURL := range req.SourceURLs {
 		source, err := s.stageSource(stagingDir, i, sourceURL)
@@ -1935,6 +1949,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 			continue
 		}
 		accessibleIndexSources++
+		indexSourceURLs = append(indexSourceURLs, sourceURL)
 	}
 
 	// When the index itself cannot be reached because of an access decision we
@@ -1950,7 +1965,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		}
 	}
 
-	profileURLs, err := s.queryMediaProfileIndex(storeDir, outputDir)
+	profileURLs, err := s.queryMediaProfileIndex(storeDir, outputDir, indexSourceURLs)
 	if err != nil {
 		if lastSourceErr != nil {
 			return materializedOutput{}, lastSourceErr
@@ -2020,6 +2035,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		if err := os.WriteFile(outputPath, []byte(""), 0o644); err != nil {
 			return materializedOutput{}, err
 		}
+		log.Printf("httpapi: materialized service %s with no accessible sources; produced empty output", serviceID)
 		return materializedOutputFromSources(mediaType, outputPath, sources, upstreamDerivations), nil
 	}
 
@@ -2034,6 +2050,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	); err != nil {
 		return materializedOutput{}, err
 	}
+	log.Printf("httpapi: materialized service %s (%d source(s) loaded, %d/%d profile source(s) accessible)", serviceID, len(sources), accessibleProfileSources, len(profileURLs))
 	return materializedOutputFromSources(mediaType, outputPath, sources, upstreamDerivations), nil
 }
 
@@ -2076,13 +2093,48 @@ func materializedOutputFromSources(mediaType, outputPath string, sources []Sourc
 	return output
 }
 
-func (s *Server) queryMediaProfileIndex(storeDir, outputDir string) ([]string, error) {
-	resultsPath := filepath.Join(outputDir, "media-profile-index.srj")
+// sourceIndexPlaceholder is replaced in the media profile index query with the
+// IRI of the requested index source, so discovery can be scoped to that exact
+// subject instead of every subject sharing the same document.
+const sourceIndexPlaceholder = "$sourceIndex$"
+
+func (s *Server) queryMediaProfileIndex(storeDir, outputDir string, indexSourceURLs []string) ([]string, error) {
+	query := s.cfg.mediaProfileIndexQuery()
+
+	// When the configured index query references the source placeholder, the
+	// caller wants discovery scoped to the exact requested IRI (e.g.
+	// .../index#familyIndex) rather than every subject that happens to live in
+	// the same document. Run the query once per index source, substituting the
+	// placeholder with that source's IRI, and union the discovered URLs.
+	if strings.Contains(query, sourceIndexPlaceholder) {
+		seen := map[string]bool{}
+		var urls []string
+		for i, sourceURL := range indexSourceURLs {
+			scoped := strings.ReplaceAll(query, sourceIndexPlaceholder, "<"+sourceURL+">")
+			discovered, err := s.runMediaProfileIndexQuery(storeDir, outputDir, scoped, i)
+			if err != nil {
+				return nil, err
+			}
+			for _, u := range discovered {
+				if !seen[u] {
+					seen[u] = true
+					urls = append(urls, u)
+				}
+			}
+		}
+		return urls, nil
+	}
+
+	return s.runMediaProfileIndexQuery(storeDir, outputDir, query, 0)
+}
+
+func (s *Server) runMediaProfileIndexQuery(storeDir, outputDir, query string, index int) ([]string, error) {
+	resultsPath := filepath.Join(outputDir, fmt.Sprintf("media-profile-index-%d.srj", index))
 	if err := runOxigraph(
 		s.cfg.OxigraphBinary,
 		"query",
 		"--location", storeDir,
-		"--query", s.cfg.mediaProfileIndexQuery(),
+		"--query", query,
 		"--results-file", resultsPath,
 		"--results-format", "json",
 	); err != nil {

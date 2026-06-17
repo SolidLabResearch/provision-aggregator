@@ -1317,7 +1317,7 @@ func TestServiceCreationSucceedsWhenIndexIsInitiallyUnauthorized(t *testing.T) {
 			if !indexAvailable {
 				return response(req, http.StatusUnauthorized, "text/plain", "", nil), nil
 			}
-			body := []byte(fmt.Sprintf("<https://example.test/index> <http://example.com/includes> <%s> .", profileURL))
+			body := []byte(fmt.Sprintf("<%s> <http://example.com/includes> <%s> .", indexURL, profileURL))
 			return response(req, http.StatusOK, "application/n-triples", "", body), nil
 		case profileURL:
 			return response(req, http.StatusOK, "application/n-triples", "", []byte(`<https://example.test/profile> <https://example.test/p> "profile" .`)), nil
@@ -1572,14 +1572,14 @@ func indexedProfileFixture(t *testing.T, accessible, total int) indexedProfileFi
 	}
 
 	indexPath := filepath.Join(dir, "index.nt")
+	indexURL := url.URL{Scheme: "file", Path: indexPath}
 	var index strings.Builder
 	for _, profileURL := range profileURLs {
-		index.WriteString(fmt.Sprintf("<https://example.test/index> <http://example.com/includes> <%s> .\n", profileURL))
+		index.WriteString(fmt.Sprintf("<%s> <http://example.com/includes> <%s> .\n", indexURL.String(), profileURL))
 	}
 	if err := os.WriteFile(indexPath, []byte(index.String()), 0o644); err != nil {
 		t.Fatalf("write index fixture: %v", err)
 	}
-	indexURL := url.URL{Scheme: "file", Path: indexPath}
 	return indexedProfileFiles{indexURL: indexURL.String(), profilePaths: profilePaths}
 }
 

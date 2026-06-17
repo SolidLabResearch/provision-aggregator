@@ -25,14 +25,14 @@ func main() {
 	}
 	aggregator := httpapi.NewServer(cfg)
 	httpServer := &http.Server{
-		Addr:    ":8080",
+		Addr:    cfg.ListenAddr(),
 		Handler: aggregator.Routes(),
 	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	log.Printf("aggregator server listening on :8080")
+	log.Printf("aggregator server listening on %s (public base URL %s)", cfg.LocalURL(), cfg.BaseURL)
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)

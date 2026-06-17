@@ -9,6 +9,7 @@ import (
 type fileConfig struct {
 	BaseURL                                         *string  `json:"base_url"`
 	Version                                         *string  `json:"version"`
+	Port                                            *int     `json:"port"`
 	ClientID                                        *string  `json:"client_id"`
 	Subject                                         *string  `json:"subject"`
 	AccountServerURL                                *string  `json:"account_server"`
@@ -69,6 +70,7 @@ func applyConfigFile(body []byte, cfg Config) (Config, error) {
 
 	setString(file.BaseURL, &cfg.BaseURL)
 	setString(file.Version, &cfg.Version)
+	setInt(file.Port, &cfg.Port)
 	setString(file.ClientID, &cfg.ClientID)
 	setString(file.Subject, &cfg.Subject)
 	setString(file.AccountServerURL, &cfg.AccountServerURL)
