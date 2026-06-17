@@ -427,11 +427,11 @@ func (s *Server) writeAggregatorList(w http.ResponseWriter, ownerToken string) {
 	}
 	s.mu.Unlock()
 
-	descriptions := make([]AggregatorDescription, 0, len(aggregators))
+	urls := make([]string, 0, len(aggregators))
 	for _, agg := range aggregators {
-		descriptions = append(descriptions, BuildAggregatorDescription(s.cfg, agg))
+		urls = append(urls, s.cfg.absolute("/aggregators/"+agg.ID))
 	}
-	writeJSON(w, http.StatusOK, descriptions)
+	writeJSON(w, http.StatusOK, urls)
 }
 
 func (s *Server) handleAggregator(w http.ResponseWriter, r *http.Request) {

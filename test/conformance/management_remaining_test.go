@@ -34,12 +34,12 @@ func TestAGGRMGMT016(t *testing.T) {
 		t.Fatalf("DELETE aggregator status = %d, want 204", deleteRec.Code)
 	}
 	rec := requestWithBearer(server, http.MethodGet, "/registration", "", nil, "valid-management-token")
-	var aggregators []httpapi.AggregatorDescription
+	var aggregators []string
 	if err := json.Unmarshal(rec.Body.Bytes(), &aggregators); err != nil {
-		t.Fatalf("management GET must return JSON array: %v", err)
+		t.Fatalf("management GET must return JSON array of URLs: %v", err)
 	}
 	for _, agg := range aggregators {
-		if agg.ID == desc.ID {
+		if agg == desc.ID {
 			t.Fatalf("management GET still lists deleted aggregator %q", desc.ID)
 		}
 	}

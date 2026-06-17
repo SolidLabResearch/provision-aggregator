@@ -164,9 +164,9 @@ func TestAGGRMGMT004(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /registration status = %d, want 200", rec.Code)
 	}
-	var aggregators []httpapi.AggregatorDescription
+	var aggregators []string
 	if err := json.Unmarshal(rec.Body.Bytes(), &aggregators); err != nil {
-		t.Fatalf("management GET must return JSON array: %v", err)
+		t.Fatalf("management GET must return JSON array of URLs: %v", err)
 	}
 	if len(aggregators) != 1 {
 		t.Fatalf("management GET returned %d aggregators, want 1", len(aggregators))
@@ -195,12 +195,12 @@ func TestManagementListIsScopedToTokenOwner(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /registration status = %d, want 200", rec.Code)
 	}
-	var aggregators []httpapi.AggregatorDescription
+	var aggregators []string
 	if err := json.Unmarshal(rec.Body.Bytes(), &aggregators); err != nil {
-		t.Fatalf("management GET must return JSON array: %v", err)
+		t.Fatalf("management GET must return JSON array of URLs: %v", err)
 	}
 	for _, agg := range aggregators {
-		if agg.ID == owned.ID {
+		if agg == owned.ID {
 			t.Fatalf("management GET leaked another user's aggregator %q to unrelated token", owned.ID)
 		}
 	}
@@ -265,11 +265,11 @@ func TestAGGRMGMT014(t *testing.T) {
 	desc := provision(t, server)
 
 	rec := requestWithBearer(server, http.MethodGet, "/registration", "", nil, "valid-management-token")
-	var aggregators []httpapi.AggregatorDescription
+	var aggregators []string
 	if err := json.Unmarshal(rec.Body.Bytes(), &aggregators); err != nil {
-		t.Fatalf("management GET must return JSON array: %v", err)
+		t.Fatalf("management GET must return JSON array of URLs: %v", err)
 	}
-	if len(aggregators) != 1 || aggregators[0].ID != desc.ID {
+	if len(aggregators) != 1 || aggregators[0] != desc.ID {
 		t.Fatalf("management GET did not list provisioned aggregator %q: %#v", desc.ID, aggregators)
 	}
 }
