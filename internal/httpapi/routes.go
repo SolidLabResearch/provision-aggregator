@@ -1783,9 +1783,16 @@ func subjectFromBearer(token, fallback string) string {
 		return fallback
 	}
 	var claims struct {
+		WebID   string `json:"webid"`
 		Subject string `json:"sub"`
 	}
-	if err := json.Unmarshal(payload, &claims); err != nil || claims.Subject == "" {
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return fallback
+	}
+	if claims.WebID != "" {
+		return claims.WebID
+	}
+	if claims.Subject == "" {
 		return fallback
 	}
 	return claims.Subject
