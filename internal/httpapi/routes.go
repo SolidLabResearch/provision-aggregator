@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -102,27 +101,27 @@ func (s *Server) initializeAccountToken() {
 
 func (s *Server) initializeAuthorizationServer() {
 	if !s.shouldUseLiveAuthorizationServer() || s.accountTokenError != nil {
-		log.Printf("httpapi: skipping live authorization-server initialization (live=%t accountTokenError=%v)", s.shouldUseLiveAuthorizationServer(), s.accountTokenError)
+		logInfof("httpapi: skipping live authorization-server initialization (live=%t accountTokenError=%v)", s.shouldUseLiveAuthorizationServer(), s.accountTokenError)
 		return
 	}
-	log.Printf("httpapi: initializing live authorization-server integration for %s", s.cfg.authorizationServerURL())
+	logInfof("httpapi: initializing live authorization-server integration for %s", s.cfg.authorizationServerURL())
 	metadata, err := s.cfg.discoverAuthorizationServerMetadata(s.cfg.authorizationServerURL())
 	if err != nil {
 		s.authorizationServerError = err
-		log.Printf("httpapi: authorization-server metadata discovery failed: %v", err)
+		logWarnf("httpapi: authorization-server metadata discovery failed: %v", err)
 		return
 	}
 	if _, err := s.protectionAPIAuthorization(metadata); err != nil {
 		s.authorizationServerError = err
-		log.Printf("httpapi: protection API authorization failed: %v", err)
+		logWarnf("httpapi: protection API authorization failed: %v", err)
 		return
 	}
 	if err := s.syncConfiguredAuthorizationPolicies(); err != nil {
 		s.authorizationServerError = err
-		log.Printf("httpapi: authorization policy synchronization failed: %v", err)
+		logWarnf("httpapi: authorization policy synchronization failed: %v", err)
 		return
 	}
-	log.Printf("httpapi: live authorization-server initialization completed successfully")
+	logInfof("httpapi: live authorization-server initialization completed successfully")
 }
 
 type outputAsset struct {
@@ -413,9 +412,6 @@ func (s *Server) acceptProvisionToken(token string) bool {
 }
 
 func (s *Server) writeAggregatorList(w http.ResponseWriter, ownerToken string) {
-	// Only list aggregators owned by the user behind the supplied token. The
-	// owner is identified by an exact owner-token match or, for JWT access
-	// tokens, by the token's subject claim.
 	subject := subjectFromBearer(ownerToken, "")
 
 	s.mu.Lock()
@@ -521,21 +517,21 @@ func (s *Server) createAggregator(ownerToken string) (aggregatorInstance, error)
 		CreatedAt:   now,
 		TokenExpiry: tokenExpiry,
 	}
-	log.Printf("Created aggregator %s for subject %s", agg.ID, agg.Subject)
+	logInfof("Created aggregator %s for subject %s", agg.ID, agg.Subject)
 	s.aggregators[id] = agg
 	s.services[id] = make(map[string]serviceInstance)
 	s.registerAggregatorResourcesLocked(agg)
 	s.mu.Unlock()
 
 	if err := s.registerAggregatorResourcesAtAuthorizationServer(agg); err != nil {
-		log.Printf("httpapi: authorization server registration failed for aggregator %s: %v", agg.ID, err)
+		logWarnf("httpapi: authorization server registration failed for aggregator %s: %v", agg.ID, err)
 		return aggregatorInstance{}, err
 	}
 	return agg, nil
 }
 
 func (s *Server) deleteAggregator(aggID string) {
-	log.Printf("httpapi: deleting aggregator %s and its services", aggID)
+	logInfof("httpapi: deleting aggregator %s and its services", aggID)
 	resources := []string{
 		s.cfg.absolute("/aggregators/" + aggID),
 		s.cfg.absolute("/aggregators/" + aggID + "/transformations"),
@@ -609,20 +605,20 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 	}
 
 	serviceID := s.reserveServiceID()
-	log.Printf("httpapi: creating service %s for aggregator %s (%d source(s), query type %s)", serviceID, aggID, len(req.SourceURLs), queryType)
+	logInfof("httpapi: creating service %s for aggregator %s (%d source(s), query type %s)", serviceID, aggID, len(req.SourceURLs), queryType)
 	output, err := s.materialize(serviceID, req, queryType)
 	if err != nil {
 		if serviceCanBeCreatedWithoutInitialMaterialization(err) {
-			log.Printf("httpapi: service %s created without initial materialization, %d source(s) still inaccessible; starting availability polling", serviceID, len(inaccessibleSourceURLs(err)))
+			logInfof("httpapi: service %s created without initial materialization, %d source(s) still inaccessible; starting availability polling", serviceID, len(inaccessibleSourceURLs(err)))
 			output = materializedOutput{MediaType: outputMediaTypeForQueryType(queryType)}
 			if err := s.registerServiceResource(aggID, serviceID); err != nil {
-				log.Printf("httpapi: authorization server registration failed for service %s: %v", serviceID, err)
+				logWarnf("httpapi: authorization server registration failed for service %s: %v", serviceID, err)
 				http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
 				return
 			}
 			asset, err := s.registerOutputAsset(aggID, serviceID, output)
 			if err != nil {
-				log.Printf("httpapi: output asset registration failed for service %s: %v", serviceID, err)
+				logWarnf("httpapi: output asset registration failed for service %s: %v", serviceID, err)
 				http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
 				return
 			}
@@ -637,19 +633,19 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 		if strings.Contains(err.Error(), "oxigraph") {
 			status = http.StatusInternalServerError
 		}
-		log.Printf("httpapi: materialization failed for service %s: %v", serviceID, err)
+		logWarnf("httpapi: materialization failed for service %s: %v", serviceID, err)
 		http.Error(w, "materialization failed: "+err.Error(), status)
 		return
 	}
 
 	if err := s.registerServiceResource(aggID, serviceID); err != nil {
-		log.Printf("httpapi: authorization server registration failed for service %s: %v", serviceID, err)
+		logWarnf("httpapi: authorization server registration failed for service %s: %v", serviceID, err)
 		http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	asset, err := s.registerOutputAsset(aggID, serviceID, output)
 	if err != nil {
-		log.Printf("httpapi: output asset registration failed for service %s: %v", serviceID, err)
+		logWarnf("httpapi: output asset registration failed for service %s: %v", serviceID, err)
 		http.Error(w, "authorization server registration failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -659,11 +655,11 @@ func (s *Server) handleCreateService(w http.ResponseWriter, r *http.Request, agg
 	if err != nil {
 		status = "failed"
 		errorMessage = err.Error()
-		log.Printf("httpapi: service %s materialized but derivedFrom update failed: %v", serviceID, err)
+		logWarnf("httpapi: service %s materialized but derivedFrom update failed: %v", serviceID, err)
 	}
 
 	svc := s.createService(aggID, serviceID, req, queryType, output, asset, status, errorMessage, derivedFrom)
-	log.Printf("httpapi: service %s for aggregator %s created with status %q", serviceID, aggID, status)
+	logInfof("httpapi: service %s for aggregator %s created with status %q", serviceID, aggID, status)
 	desc := BuildServiceDescription(s.cfg, svc)
 	w.Header().Set("Location", desc.ID)
 	writeJSONLD(w, http.StatusCreated, desc)
@@ -736,11 +732,11 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request, agg
 		return
 	}
 	if err := s.deleteService(aggID, svc); err != nil {
-		log.Printf("httpapi: service cleanup failed for service %s (aggregator %s): %v", serviceID, aggID, err)
+		logWarnf("httpapi: service cleanup failed for service %s (aggregator %s): %v", serviceID, aggID, err)
 		http.Error(w, "service cleanup failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("httpapi: deleted service %s for aggregator %s", serviceID, aggID)
+	logInfof("httpapi: deleted service %s for aggregator %s", serviceID, aggID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1120,14 +1116,14 @@ func (s *Server) startSourceAvailabilityPolling(aggID, serviceID string, req cre
 					pendingSources = inaccessibleSourceURLs(err)
 					continue
 				}
-				log.Printf("httpapi: stopping availability polling for service %s: %v", serviceID, err)
+				logWarnf("httpapi: stopping availability polling for service %s: %v", serviceID, err)
 				return
 			}
 			if _, _, err := s.applyMaterializedOutput(aggID, serviceID, output); err != nil {
-				log.Printf("httpapi: availability polling materialized service %s but commit failed: %v", serviceID, err)
+				logWarnf("httpapi: availability polling materialized service %s but commit failed: %v", serviceID, err)
 				return
 			}
-			log.Printf("httpapi: availability polling completed materialization for service %s", serviceID)
+			logInfof("httpapi: availability polling completed materialization for service %s", serviceID)
 			return
 		}
 	}()
@@ -1938,7 +1934,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	for i, sourceURL := range req.SourceURLs {
 		source, err := s.stageSource(stagingDir, i, sourceURL)
 		if err != nil {
-			log.Printf("httpapi: failed to stage index source %s: %v", sourceURL, err)
+			logWarnf("httpapi: failed to stage index source %s: %v", sourceURL, err)
 			lastSourceErr = err
 			if isInaccessibleSourceError(err) {
 				lastIndexAccessErr = err
@@ -1951,7 +1947,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 			upstreamDerivations = appendUniqueUpstreamDerivation(upstreamDerivations, source.UpstreamDerivation)
 		}
 		if err := loadStagedSource(s.cfg.OxigraphBinary, storeDir, source); err != nil {
-			log.Printf("httpapi: failed to load index source %s into oxigraph: %v", sourceURL, err)
+			logWarnf("httpapi: failed to load index source %s into oxigraph: %v", sourceURL, err)
 			lastSourceErr = err
 			continue
 		}
@@ -1990,7 +1986,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		for i, sourceURL := range profileURLs {
 			source, err := s.stageSource(stagingDir, len(req.SourceURLs)+i, sourceURL)
 			if err != nil {
-				log.Printf("httpapi: failed to stage media profile source %s: %v", sourceURL, err)
+				logWarnf("httpapi: failed to stage media profile source %s: %v", sourceURL, err)
 				lastSourceErr = err
 				if isInaccessibleSourceError(err) {
 					inaccessibleProfileSources = append(inaccessibleProfileSources, sourceURL)
@@ -2002,7 +1998,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 				upstreamDerivations = appendUniqueUpstreamDerivation(upstreamDerivations, source.UpstreamDerivation)
 			}
 			if err := loadStagedSource(s.cfg.OxigraphBinary, storeDir, source); err != nil {
-				log.Printf("httpapi: failed to load media profile source %s into oxigraph: %v", sourceURL, err)
+				logWarnf("httpapi: failed to load media profile source %s into oxigraph: %v", sourceURL, err)
 				lastSourceErr = err
 				continue
 			}
@@ -2042,7 +2038,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		if err := os.WriteFile(outputPath, []byte(""), 0o644); err != nil {
 			return materializedOutput{}, err
 		}
-		log.Printf("httpapi: materialized service %s with no accessible sources; produced empty output", serviceID)
+		logInfof("httpapi: materialized service %s with no accessible sources; produced empty output", serviceID)
 		return materializedOutputFromSources(mediaType, outputPath, sources, upstreamDerivations), nil
 	}
 
@@ -2057,7 +2053,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	); err != nil {
 		return materializedOutput{}, err
 	}
-	log.Printf("httpapi: materialized service %s (%d source(s) loaded, %d/%d profile source(s) accessible)", serviceID, len(sources), accessibleProfileSources, len(profileURLs))
+	logInfof("httpapi: materialized service %s (%d source(s) loaded, %d/%d profile source(s) accessible)", serviceID, len(sources), accessibleProfileSources, len(profileURLs))
 	return materializedOutputFromSources(mediaType, outputPath, sources, upstreamDerivations), nil
 }
 
@@ -2399,10 +2395,10 @@ type sourceHTTPResponse struct {
 }
 
 func (s *Server) requestHTTPSource(method, rawURL, token string) (sourceHTTPResponse, error) {
-	log.Printf("httpapi: requesting upstream source %s %s (token-present=%t)", method, rawURL, token != "")
+	logDebugf("httpapi: requesting upstream source %s %s (token-present=%t)", method, rawURL, token != "")
 	req, err := http.NewRequest(method, rawURL, nil)
 	if err != nil {
-		log.Printf("httpapi: failed to build upstream source request for %s: %v", rawURL, err)
+		logWarnf("httpapi: failed to build upstream source request for %s: %v", rawURL, err)
 		return sourceHTTPResponse{}, err
 	}
 	if token != "" {
@@ -2414,20 +2410,20 @@ func (s *Server) requestHTTPSource(method, rawURL, token string) (sourceHTTPResp
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("httpapi: upstream source request failed for %s: %v", rawURL, err)
+		logWarnf("httpapi: upstream source request failed for %s: %v", rawURL, err)
 		return sourceHTTPResponse{}, err
 	}
 	body, err := io.ReadAll(resp.Body)
 	closeErr := resp.Body.Close()
 	if err != nil {
-		log.Printf("httpapi: reading upstream source response failed for %s: %v", rawURL, err)
+		logWarnf("httpapi: reading upstream source response failed for %s: %v", rawURL, err)
 		return sourceHTTPResponse{}, err
 	}
 	if closeErr != nil {
-		log.Printf("httpapi: closing upstream source response failed for %s: %v", rawURL, closeErr)
+		logWarnf("httpapi: closing upstream source response failed for %s: %v", rawURL, closeErr)
 		return sourceHTTPResponse{}, closeErr
 	}
-	log.Printf("httpapi: upstream source response %s -> %d", rawURL, resp.StatusCode)
+	logDebugf("httpapi: upstream source response %s -> %d", rawURL, resp.StatusCode)
 	return sourceHTTPResponse{
 		Body:        body,
 		ContentType: resp.Header.Get("Content-Type"),
@@ -2467,17 +2463,17 @@ func (s *Server) obtainUpstreamRPT(sourceURL, asURI, ticket string) (string, ups
 func (s *Server) submitUpstreamAccessRequest(resourceURL, asURI, method string) error {
 	requestingParty := s.cfg.provisionSubject()
 	if requestingParty == "" {
-		log.Printf("httpapi: cannot submit upstream access request for %s: missing requesting party WebID", resourceURL)
+		logWarnf("httpapi: cannot submit upstream access request for %s: missing requesting party WebID", resourceURL)
 		return fmt.Errorf("requesting party WebID is not configured")
 	}
 	action := odrlActionLocalForHTTPMethod(method)
 	requestURL := joinURL(asURI, "/requests")
 	body := accessRequestTurtle(asURI, resourceURL, requestingParty, action)
-	log.Printf("httpapi: submitting upstream access request to %s for %s (action=%s requestingParty=%s)", requestURL, resourceURL, action, requestingParty)
+	logDebugf("httpapi: submitting upstream access request to %s for %s (action=%s requestingParty=%s)", requestURL, resourceURL, action, requestingParty)
 
 	req, err := http.NewRequest(http.MethodPost, requestURL, strings.NewReader(body))
 	if err != nil {
-		log.Printf("httpapi: failed to build upstream access request for %s: %v", resourceURL, err)
+		logWarnf("httpapi: failed to build upstream access request for %s: %v", resourceURL, err)
 		return err
 	}
 	req.Header.Set("Authorization", "WebID "+url.QueryEscape(requestingParty))
@@ -2485,14 +2481,14 @@ func (s *Server) submitUpstreamAccessRequest(resourceURL, asURI, method string) 
 
 	status, responseBody, err := s.doAuthorizationServer(req)
 	if err != nil {
-		log.Printf("httpapi: upstream access request failed for %s: %v", resourceURL, err)
+		logWarnf("httpapi: upstream access request failed for %s: %v", resourceURL, err)
 		return err
 	}
 	if status < 200 || status > 299 {
-		log.Printf("httpapi: upstream access request for %s returned %d", resourceURL, status)
+		logWarnf("httpapi: upstream access request for %s returned %d", resourceURL, status)
 		return fmt.Errorf("%s %s returned %d: %s", req.Method, req.URL.String(), status, strings.TrimSpace(string(responseBody)))
 	}
-	log.Printf("httpapi: upstream access request recorded for %s", resourceURL)
+	logDebugf("httpapi: upstream access request recorded for %s", resourceURL)
 	s.recordUpstreamAccessRequest(resourceURL, asURI, requestingParty, "odrl:"+action, requestURL)
 	return nil
 }

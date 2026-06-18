@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -209,10 +208,10 @@ func (s *Server) deleteAuthorizationServerClientRegistration() error {
 }
 
 func (s *Server) requestLivePermission(resourceID string, scopes []string) (string, error) {
-	log.Printf("httpapi: requesting live permission for %s with scopes %v", resourceID, scopes)
+	logDebugf("httpapi: requesting live permission for %s with scopes %v", resourceID, scopes)
 	metadata, pat, err := s.authorizationServerMetadataAndPAT()
 	if err != nil {
-		log.Printf("httpapi: live permission setup failed for %s: %v", resourceID, err)
+		logWarnf("httpapi: live permission setup failed for %s: %v", resourceID, err)
 		return "", err
 	}
 	authorizationResourceID := s.authorizationResourceID(resourceID)
@@ -227,7 +226,7 @@ func (s *Server) protectionAPIAuthorization(metadata oidcConfiguration) (string,
 	cached := s.protectionToken
 	if cached.Authorization != "" && cached.ExpiresAt.After(time.Now().Add(5*time.Second)) {
 		s.mu.Unlock()
-		log.Printf("httpapi: reusing cached protection token expiring at %s", cached.ExpiresAt.Format(time.RFC3339))
+		logDebugf("httpapi: reusing cached protection token expiring at %s", cached.ExpiresAt.Format(time.RFC3339))
 		return cached.Authorization, nil
 	}
 	client := s.authorizationServerClient
@@ -235,10 +234,10 @@ func (s *Server) protectionAPIAuthorization(metadata oidcConfiguration) (string,
 
 	if client.ClientID == "" || client.ClientSecret == "" {
 		var err error
-		log.Printf("httpapi: registering authorization-server client for protection API access")
+		logDebugf("httpapi: registering authorization-server client for protection API access")
 		client, err = s.registerAuthorizationServerClient(metadata)
 		if err != nil {
-			log.Printf("httpapi: authorization-server client registration failed: %v", err)
+			logWarnf("httpapi: authorization-server client registration failed: %v", err)
 			return "", err
 		}
 		s.mu.Lock()
@@ -246,10 +245,10 @@ func (s *Server) protectionAPIAuthorization(metadata oidcConfiguration) (string,
 		s.mu.Unlock()
 	}
 
-	log.Printf("httpapi: requesting protection token from %s", metadata.TokenEndpoint)
+	logDebugf("httpapi: requesting protection token from %s", metadata.TokenEndpoint)
 	pat, err := s.requestProtectionToken(metadata.TokenEndpoint, client)
 	if err != nil {
-		log.Printf("httpapi: protection token request failed: %v", err)
+		logWarnf("httpapi: protection token request failed: %v", err)
 		return "", err
 	}
 	s.mu.Lock()
@@ -260,15 +259,15 @@ func (s *Server) protectionAPIAuthorization(metadata oidcConfiguration) (string,
 
 func (s *Server) registerAuthorizationServerClient(metadata oidcConfiguration) (authorizationServerClient, error) {
 	if metadata.RegistrationEndpoint == "" {
-		log.Printf("httpapi: cannot register authorization-server client: metadata missing registration_endpoint")
+		logWarnf("httpapi: cannot register authorization-server client: metadata missing registration_endpoint")
 		return authorizationServerClient{}, fmt.Errorf("authorization server metadata did not include registration_endpoint")
 	}
 	webID := s.cfg.provisionSubject()
 	if webID == "" {
-		log.Printf("httpapi: cannot register authorization-server client: missing WebID")
+		logWarnf("httpapi: cannot register authorization-server client: missing WebID")
 		return authorizationServerClient{}, fmt.Errorf("cannot register authorization server client without a WebID")
 	}
-	log.Printf("httpapi: registering authorization-server client at %s for %s", metadata.RegistrationEndpoint, webID)
+	logDebugf("httpapi: registering authorization-server client at %s for %s", metadata.RegistrationEndpoint, webID)
 	body, err := json.Marshal(map[string]string{
 		"client_uri": s.cfg.BaseURL,
 	})
@@ -285,11 +284,11 @@ func (s *Server) registerAuthorizationServerClient(metadata oidcConfiguration) (
 
 	response, err := s.doAuthorizationServerClientRegistration(req)
 	if err != nil {
-		log.Printf("httpapi: authorization-server client registration request failed: %v", err)
+		logWarnf("httpapi: authorization-server client registration request failed: %v", err)
 		return authorizationServerClient{}, err
 	}
 	if response.ClientID == "" || response.ClientSecret == "" {
-		log.Printf("httpapi: authorization-server client registration response missing credentials")
+		logWarnf("httpapi: authorization-server client registration response missing credentials")
 		return authorizationServerClient{}, fmt.Errorf("authorization server client registration did not return client_id and client_secret")
 	}
 	return authorizationServerClient{
@@ -369,10 +368,10 @@ func authorizationServerClientRegistrationURL(registrationEndpoint, clientID str
 
 func (s *Server) requestProtectionToken(tokenEndpoint string, client authorizationServerClient) (protectionToken, error) {
 	if tokenEndpoint == "" {
-		log.Printf("httpapi: cannot request protection token: metadata missing token_endpoint")
+		logWarnf("httpapi: cannot request protection token: metadata missing token_endpoint")
 		return protectionToken{}, fmt.Errorf("authorization server metadata did not include token_endpoint")
 	}
-	log.Printf("httpapi: POST protection token request to %s using client %s", tokenEndpoint, client.ClientID)
+	logDebugf("httpapi: POST protection token request to %s using client %s", tokenEndpoint, client.ClientID)
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
 	form.Set("scope", protectionAPIScope)
@@ -389,7 +388,7 @@ func (s *Server) requestProtectionToken(tokenEndpoint string, client authorizati
 		return protectionToken{}, err
 	}
 	if response.AccessToken == "" || response.TokenType == "" {
-		log.Printf("httpapi: protection token response missing access_token or token_type")
+		logWarnf("httpapi: protection token response missing access_token or token_type")
 		return protectionToken{}, fmt.Errorf("PAT response did not include access_token and token_type")
 	}
 	expiresAt := time.Now().Add(time.Hour)
@@ -563,7 +562,7 @@ func (s *Server) liveRPTIsValid(token, resourceID string, requiredScopes []strin
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	log.Printf("httpapi: introspecting RPT for resource %s with scopes %v", resourceID, requiredScopes)
+	logDebugf("httpapi: introspecting RPT for resource %s with scopes %v", resourceID, requiredScopes)
 	status, body, err := s.doAuthorizationServer(req)
 	if err != nil {
 		return false, err
@@ -576,17 +575,17 @@ func (s *Server) liveRPTIsValid(token, resourceID string, requiredScopes []strin
 		return false, fmt.Errorf("decode %s response: %w", req.URL.String(), err)
 	}
 	if !response.Active {
-		log.Printf("httpapi: RPT is not active")
+		logDebugf("httpapi: RPT is not active")
 		return false, nil
 	}
 	authorizationResourceID := s.authorizationResourceID(resourceID)
 	for _, permission := range response.Permissions {
 		if permission.ResourceID == authorizationResourceID && containsAllStrings(permission.ResourceScopes, requiredScopes) {
-			log.Printf("httpapi: RPT is valid for resource %s with scopes %v", resourceID, requiredScopes)
+			logDebugf("httpapi: RPT is valid for resource %s with scopes %v", resourceID, requiredScopes)
 			return true, nil
 		}
 	}
-	log.Printf("httpapi: RPT is invalid")
+	logDebugf("httpapi: RPT is invalid")
 	return false, nil
 }
 
@@ -701,7 +700,7 @@ func (s *Server) doAuthorizationServerJSONEither(req *http.Request, wantStatuses
 			return nil
 		}
 	}
-	log.Printf("httpapi: unexpected AS status for %s %s: %d", req.Method, req.URL.String(), status)
+	logWarnf("httpapi: unexpected AS status for %s %s: %d", req.Method, req.URL.String(), status)
 	return fmt.Errorf("%s %s returned %d: %s", req.Method, req.URL.String(), status, strings.TrimSpace(string(body)))
 }
 
@@ -710,19 +709,19 @@ func (s *Server) doAuthorizationServer(req *http.Request) (int, []byte, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	log.Printf("httpapi: sending AS request %s %s", req.Method, req.URL.String())
+	logDebugf("httpapi: sending AS request %s %s", req.Method, req.URL.String())
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("httpapi: AS request error for %s %s: %v", req.Method, req.URL.String(), err)
+		logWarnf("httpapi: AS request error for %s %s: %v", req.Method, req.URL.String(), err)
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("httpapi: reading AS response failed for %s %s: %v", req.Method, req.URL.String(), err)
+		logWarnf("httpapi: reading AS response failed for %s %s: %v", req.Method, req.URL.String(), err)
 		return 0, nil, err
 	}
-	log.Printf("httpapi: AS response %s %s -> %d", req.Method, req.URL.String(), resp.StatusCode)
+	logDebugf("httpapi: AS response %s %s -> %d", req.Method, req.URL.String(), resp.StatusCode)
 	return resp.StatusCode, body, nil
 }
 
