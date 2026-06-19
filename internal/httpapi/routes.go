@@ -41,6 +41,9 @@ type Server struct {
 	serviceRevisions          map[string]int
 	outputAssets              map[string]outputAsset
 	upstreamTokens            map[string]cachedUpstreamToken
+	upstreamOwnerIDs          map[string]string
+	upstreamDerivationIDs     map[string]string
+	upstreamDerivationTokens  map[string]upstreamTokenResponse
 	permissions               []PermissionRequestEvidence
 	upstreamAccesses          []UpstreamAccessEvidence
 	upstreamAccessRequests    []UpstreamAccessRequestEvidence
@@ -77,6 +80,9 @@ func NewServer(cfg Config) *Server {
 		serviceRevisions:         make(map[string]int),
 		outputAssets:             make(map[string]outputAsset),
 		upstreamTokens:           make(map[string]cachedUpstreamToken),
+		upstreamOwnerIDs:         make(map[string]string),
+		upstreamDerivationIDs:    make(map[string]string),
+		upstreamDerivationTokens: make(map[string]upstreamTokenResponse),
 		authorizationResourceIDs: make(map[string]string),
 		pollingServices:          make(map[string]bool),
 		materializeLocks:         make(map[string]*sync.Mutex),
@@ -184,6 +190,7 @@ type ServiceCleanupEvidence struct {
 type upstreamDerivationEvidence struct {
 	Issuer                    string
 	DerivationResourceID      string
+	SourceURL                 string
 	ManagementAccessToken     string
 	ManagementAccessTokenType string
 }
@@ -200,10 +207,11 @@ func (e upstreamDerivationEvidence) hasData() bool {
 	return e.Issuer != "" || e.DerivationResourceID != "" || e.ManagementAccessToken != ""
 }
 
-func upstreamDerivationEvidenceFrom(issuer string, token upstreamTokenResponse) upstreamDerivationEvidence {
+func upstreamDerivationEvidenceFrom(issuer, sourceURL string, token upstreamTokenResponse) upstreamDerivationEvidence {
 	evidence := upstreamDerivationEvidence{
 		Issuer:               issuer,
 		DerivationResourceID: token.DerivationResourceID,
+		SourceURL:            sourceURL,
 	}
 	if token.ManagementAccessToken != nil {
 		evidence.ManagementAccessToken = token.ManagementAccessToken.AccessToken
@@ -1173,7 +1181,7 @@ func (s *Server) upstreamSourceAccessible(rawURL string) bool {
 			return true
 		}
 	}
-	upstreamToken, _, err := s.obtainUpstreamRPT(rawURL, asURI, ticket)
+	upstreamToken, _, err := s.obtainUpstreamRPT("", rawURL, asURI, ticket)
 	if err != nil {
 		return false
 	}
@@ -1354,7 +1362,7 @@ func (s *Server) updateOutputAssetDerivedFrom(resourceID, serviceID string, outp
 			managementAccessTokenType = upstreamDerivation.ManagementAccessTokenType
 		}
 		if derivation.Issuer != "" {
-			if err := s.updateUASDerivationResource(derivation.DerivationResourceID, derivation.Issuer, resourceID, serviceID, scopes, managementAccessToken, managementAccessTokenType); err != nil {
+			if err := s.updateUASDerivationResource(derivation.DerivationResourceID, derivation.Issuer, output.TransformationSourceURL, resourceID, serviceID, scopes, managementAccessToken, managementAccessTokenType); err != nil {
 				return derivedFrom, err
 			}
 		}
@@ -1421,7 +1429,7 @@ func (s *Server) cleanupServiceAssets(svc serviceInstance) {
 	})
 }
 
-func (s *Server) updateUASDerivationResource(derivationResourceID, derivationIssuer string, resourceID, serviceID string, scopes []string, managementAccessToken, managementAccessTokenType string) error {
+func (s *Server) updateUASDerivationResource(derivationResourceID, derivationIssuer, sourceURL string, resourceID, serviceID string, scopes []string, managementAccessToken, managementAccessTokenType string) error {
 	if !s.shouldUseLiveAuthorizationServer() && s.cfg.UASDerivationResourcesEndpoint == "" {
 		return nil
 	}
@@ -1452,7 +1460,7 @@ func (s *Server) updateUASDerivationResource(derivationResourceID, derivationIss
 	}
 
 	body, err := json.Marshal(derivationResourceDescriptionDocument{
-		Name:           s.cfg.upstreamDerivationResourceName(),
+		Name:           s.upstreamDerivationResourceName(sourceURL),
 		ResourceScopes: append([]string(nil), scopes...),
 	})
 	if err != nil {
@@ -1485,6 +1493,14 @@ func (s *Server) updateUASDerivationResource(derivationResourceID, derivationIss
 	}
 
 	return nil
+}
+
+func (s *Server) upstreamDerivationResourceName(sourceURL string) string {
+	name := s.cfg.upstreamDerivationResourceName()
+	if sourceURL != "" {
+		name += " from " + sourceURL
+	}
+	return name
 }
 
 func (s *Server) deleteUASDerivationResource(derivationResourceID string, upstreamDerivation upstreamDerivationEvidence) error {
@@ -1819,11 +1835,12 @@ func validateQuery(query string) (string, error) {
 }
 
 type materializedOutput struct {
-	MediaType           string
-	Path                string
-	Sources             []SourceMetadata
-	UpstreamDerivation  upstreamDerivationEvidence
-	UpstreamDerivations []upstreamDerivationEvidence
+	MediaType               string
+	Path                    string
+	Sources                 []SourceMetadata
+	TransformationSourceURL string
+	UpstreamDerivation      upstreamDerivationEvidence
+	UpstreamDerivations     []upstreamDerivationEvidence
 }
 
 type stagedSource struct {
@@ -1932,7 +1949,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	var indexSourceURLs []string
 	accessibleIndexSources := 0
 	for i, sourceURL := range req.SourceURLs {
-		source, err := s.stageSource(stagingDir, i, sourceURL)
+		source, err := s.stageSource(serviceID, stagingDir, i, sourceURL)
 		if err != nil {
 			logWarnf("httpapi: failed to stage index source %s: %v", sourceURL, err)
 			lastSourceErr = err
@@ -1984,7 +2001,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		}
 
 		for i, sourceURL := range profileURLs {
-			source, err := s.stageSource(stagingDir, len(req.SourceURLs)+i, sourceURL)
+			source, err := s.stageSource(serviceID, stagingDir, len(req.SourceURLs)+i, sourceURL)
 			if err != nil {
 				logWarnf("httpapi: failed to stage media profile source %s: %v", sourceURL, err)
 				lastSourceErr = err
@@ -2039,7 +2056,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 			return materializedOutput{}, err
 		}
 		logInfof("httpapi: materialized service %s with no accessible sources; produced empty output", serviceID)
-		return materializedOutputFromSources(mediaType, outputPath, sources, upstreamDerivations), nil
+		return materializedOutputFromSources(mediaType, outputPath, sources, indexSourceURLs, upstreamDerivations), nil
 	}
 
 	outputPath := filepath.Join(outputDir, outputName)
@@ -2054,7 +2071,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		return materializedOutput{}, err
 	}
 	logInfof("httpapi: materialized service %s (%d source(s) loaded, %d/%d profile source(s) accessible)", serviceID, len(sources), accessibleProfileSources, len(profileURLs))
-	return materializedOutputFromSources(mediaType, outputPath, sources, upstreamDerivations), nil
+	return materializedOutputFromSources(mediaType, outputPath, sources, indexSourceURLs, upstreamDerivations), nil
 }
 
 func (s *Server) hasEnoughAccessibleProfileSources(accessible, total int) bool {
@@ -2083,12 +2100,13 @@ func loadStagedSource(binary, storeDir string, source stagedSource) error {
 	return runOxigraph(binary, args...)
 }
 
-func materializedOutputFromSources(mediaType, outputPath string, sources []SourceMetadata, upstreamDerivations []upstreamDerivationEvidence) materializedOutput {
+func materializedOutputFromSources(mediaType, outputPath string, sources []SourceMetadata, indexSourceURLs []string, upstreamDerivations []upstreamDerivationEvidence) materializedOutput {
 	output := materializedOutput{
-		MediaType:           mediaType,
-		Path:                outputPath,
-		Sources:             sources,
-		UpstreamDerivations: upstreamDerivations,
+		MediaType:               mediaType,
+		Path:                    outputPath,
+		Sources:                 sources,
+		TransformationSourceURL: strings.Join(indexSourceURLs, " "),
+		UpstreamDerivations:     upstreamDerivations,
 	}
 	if len(upstreamDerivations) > 0 {
 		output.UpstreamDerivation = upstreamDerivations[0]
@@ -2166,22 +2184,25 @@ func (s *Server) runMediaProfileIndexQuery(storeDir, outputDir, query string, in
 }
 
 func appendUniqueUpstreamDerivation(derivations []upstreamDerivationEvidence, derivation upstreamDerivationEvidence) []upstreamDerivationEvidence {
-	for _, existing := range derivations {
+	for i, existing := range derivations {
 		if existing.Issuer == derivation.Issuer && existing.DerivationResourceID == derivation.DerivationResourceID {
+			if derivations[i].SourceURL == "" {
+				derivations[i].SourceURL = derivation.SourceURL
+			}
 			return derivations
 		}
 	}
 	return append(derivations, derivation)
 }
 
-func (s *Server) stageSource(stagingDir string, index int, rawURL string) (stagedSource, error) {
+func (s *Server) stageSource(serviceID, stagingDir string, index int, rawURL string) (stagedSource, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return stagedSource{}, err
 	}
 	switch parsed.Scheme {
 	case "http", "https":
-		fetched, err := s.fetchHTTPSource(rawURL)
+		fetched, err := s.fetchHTTPSource(serviceID, rawURL)
 		if err != nil {
 			return stagedSource{}, err
 		}
@@ -2214,7 +2235,7 @@ func (s *Server) stageSource(stagingDir string, index int, rawURL string) (stage
 	}
 }
 
-func (s *Server) fetchHTTPSource(rawURL string) (sourceHTTPResult, error) {
+func (s *Server) fetchHTTPSource(serviceID, rawURL string) (sourceHTTPResult, error) {
 	resp, err := s.requestHTTPSource(http.MethodGet, rawURL, "")
 	if err != nil {
 		return sourceHTTPResult{}, err
@@ -2232,23 +2253,28 @@ func (s *Server) fetchHTTPSource(rawURL string) (sourceHTTPResult, error) {
 	upstreamToken := s.cachedUpstreamToken(rawURL, asURI)
 	var upstreamResponse upstreamTokenResponse
 	if upstreamToken != "" {
-		resp, err = s.requestHTTPSource(http.MethodGet, rawURL, upstreamToken)
-		if err != nil {
-			return sourceHTTPResult{}, err
-		}
-		if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
-			return sourceHTTPResult{
-				Body:                resp.Body,
-				ContentType:         resp.ContentType,
-				ETag:                resp.ETag,
-				Protected:           true,
-				AuthorizationServer: asURI,
-				Ticket:              ticket,
-				UpstreamDerivation:  upstreamDerivationEvidenceFrom(asURI, s.cachedUpstreamTokenResponse(rawURL, asURI)),
-			}, nil
+		cachedDerivationResponse, ok := s.cachedUpstreamDerivationTokenResponse(serviceID, rawURL, asURI)
+		if ok {
+			resp, err = s.requestHTTPSource(http.MethodGet, rawURL, upstreamToken)
+			if err != nil {
+				return sourceHTTPResult{}, err
+			}
+			if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+				return sourceHTTPResult{
+					Body:                resp.Body,
+					ContentType:         resp.ContentType,
+					ETag:                resp.ETag,
+					Protected:           true,
+					AuthorizationServer: asURI,
+					Ticket:              ticket,
+					UpstreamDerivation:  upstreamDerivationEvidenceFrom(asURI, rawURL, cachedDerivationResponse),
+				}, nil
+			}
+		} else {
+			logDebugf("httpapi: cached upstream token for %s is not reused for derivation evidence in service %s; no service-scoped derivation resource for owner", rawURL, serviceID)
 		}
 	}
-	upstreamToken, upstreamResponse, err = s.obtainUpstreamRPT(rawURL, asURI, ticket)
+	upstreamToken, upstreamResponse, err = s.obtainUpstreamRPT(serviceID, rawURL, asURI, ticket)
 	if err != nil {
 		return sourceHTTPResult{}, inaccessibleSourceError{err: err}
 	}
@@ -2266,7 +2292,7 @@ func (s *Server) fetchHTTPSource(rawURL string) (sourceHTTPResult, error) {
 		Protected:           true,
 		AuthorizationServer: asURI,
 		Ticket:              ticket,
-		UpstreamDerivation:  upstreamDerivationEvidenceFrom(asURI, upstreamResponse),
+		UpstreamDerivation:  upstreamDerivationEvidenceFrom(asURI, rawURL, upstreamResponse),
 	}, nil
 }
 
@@ -2334,7 +2360,7 @@ func (s *Server) currentHTTPSourceETag(rawURL string, metadata SourceMetadata) (
 	if !ok {
 		return "", nil
 	}
-	upstreamToken, _, err := s.obtainUpstreamRPT(rawURL, asURI, ticket)
+	upstreamToken, _, err := s.obtainUpstreamRPT("", rawURL, asURI, ticket)
 	if err != nil {
 		return "", err
 	}
@@ -2360,16 +2386,46 @@ func (s *Server) cachedUpstreamTokenResponse(sourceURL, asURI string) upstreamTo
 	return s.upstreamTokens[upstreamTokenCacheKey(sourceURL, asURI)].Response
 }
 
-func (s *Server) cachedUpstreamDerivationResourceID(sourceURL, asURI string) string {
+func (s *Server) cachedUpstreamDerivationResourceID(serviceID, sourceURL, asURI string) string {
+	if serviceID == "" {
+		return ""
+	}
+	ownerID := s.upstreamOwnerID(sourceURL)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.upstreamTokens[upstreamTokenCacheKey(sourceURL, asURI)].DerivationResourceID
+	return s.upstreamDerivationIDs[upstreamDerivationResourceCacheKey(serviceID, asURI, ownerID)]
 }
 
-func (s *Server) storeUpstreamToken(sourceURL, asURI, ticket string, response upstreamTokenResponse) {
+func (s *Server) cachedUpstreamDerivationTokenResponse(serviceID, sourceURL, asURI string) (upstreamTokenResponse, bool) {
+	if serviceID == "" || !s.cfg.hasAccountCredentials() {
+		return s.cachedUpstreamTokenResponse(sourceURL, asURI), true
+	}
+	ownerID := s.upstreamOwnerID(sourceURL)
+	key := upstreamDerivationResourceCacheKey(serviceID, asURI, ownerID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	response := s.upstreamDerivationTokens[key]
+	return response, response.DerivationResourceID != ""
+}
+
+func (s *Server) storeUpstreamToken(serviceID, sourceURL, asURI, ticket string, response upstreamTokenResponse) upstreamTokenResponse {
+	ownerID := ""
+	if serviceID != "" {
+		ownerID = s.upstreamOwnerID(sourceURL)
+	}
+	key := upstreamDerivationResourceCacheKey(serviceID, asURI, ownerID)
 	derivationResourceID := response.DerivationResourceID
 	if derivationResourceID == "" {
-		derivationResourceID = s.cachedUpstreamDerivationResourceID(sourceURL, asURI)
+		s.mu.Lock()
+		cachedDerivationResponse := s.upstreamDerivationTokens[key]
+		derivationResourceID = cachedDerivationResponse.DerivationResourceID
+		if response.ManagementAccessToken == nil {
+			response.ManagementAccessToken = cachedDerivationResponse.ManagementAccessToken
+		}
+		s.mu.Unlock()
+	}
+	if derivationResourceID != "" {
+		response.DerivationResourceID = derivationResourceID
 	}
 	s.mu.Lock()
 	s.upstreamTokens[upstreamTokenCacheKey(sourceURL, asURI)] = cachedUpstreamToken{
@@ -2379,11 +2435,136 @@ func (s *Server) storeUpstreamToken(sourceURL, asURI, ticket string, response up
 		DerivationResourceID: derivationResourceID,
 		Response:             response,
 	}
+	if serviceID != "" && derivationResourceID != "" {
+		s.upstreamDerivationIDs[key] = derivationResourceID
+		s.upstreamDerivationTokens[key] = response
+	}
 	s.mu.Unlock()
+	return response
 }
 
 func upstreamTokenCacheKey(sourceURL, asURI string) string {
 	return asURI + "\x00" + sourceURL
+}
+
+func upstreamDerivationResourceCacheKey(serviceID, asURI, ownerID string) string {
+	return serviceID + "\x00" + asURI + "\x00" + ownerID
+}
+
+func (s *Server) upstreamOwnerID(sourceURL string) string {
+	s.mu.Lock()
+	if ownerID := s.cachedUpstreamOwnerIDLocked(sourceURL); ownerID != "" {
+		s.mu.Unlock()
+		logDebugf("httpapi: upstream owner cache hit for %s -> %s", sourceURL, ownerID)
+		return ownerID
+	}
+	s.mu.Unlock()
+
+	ownerID, ownerRoot := s.discoverUpstreamOwnerID(sourceURL)
+	if ownerID == "" {
+		ownerID = sourceURL
+		logDebugf("httpapi: upstream owner discovery for %s found no profile/card candidate; using source URL as owner key", sourceURL)
+	} else {
+		logDebugf("httpapi: upstream owner discovery for %s found %s (root=%s)", sourceURL, ownerID, ownerRoot)
+	}
+
+	s.mu.Lock()
+	s.upstreamOwnerIDs[sourceURL] = ownerID
+	if ownerRoot != "" {
+		s.upstreamOwnerIDs[ownerRoot] = ownerID
+	}
+	s.mu.Unlock()
+	return ownerID
+}
+
+func (s *Server) cachedUpstreamOwnerIDLocked(sourceURL string) string {
+	if ownerID := s.upstreamOwnerIDs[sourceURL]; ownerID != "" {
+		return ownerID
+	}
+	longestPrefix := ""
+	ownerID := ""
+	for prefix, candidateOwnerID := range s.upstreamOwnerIDs {
+		if !strings.HasSuffix(prefix, "/") {
+			continue
+		}
+		if strings.HasPrefix(sourceURL, prefix) && len(prefix) > len(longestPrefix) {
+			longestPrefix = prefix
+			ownerID = candidateOwnerID
+		}
+	}
+	return ownerID
+}
+
+func (s *Server) discoverUpstreamOwnerID(sourceURL string) (string, string) {
+	candidates := upstreamOwnerProfileCandidates(sourceURL)
+	logDebugf("httpapi: upstream owner discovery for %s generated %d profile/card candidate(s)", sourceURL, len(candidates))
+	for _, candidate := range candidates {
+		found := s.upstreamProfileCardExists(candidate.WebID)
+		logDebugf("httpapi: upstream owner candidate for %s: webid=%s root=%s found=%t", sourceURL, candidate.WebID, candidate.Root, found)
+		if found {
+			return candidate.WebID, candidate.Root
+		}
+	}
+	return "", ""
+}
+
+type upstreamOwnerProfileCandidate struct {
+	WebID string
+	Root  string
+}
+
+func upstreamOwnerProfileCandidates(sourceURL string) []upstreamOwnerProfileCandidate {
+	parsed, err := url.Parse(sourceURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil
+	}
+	segments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(segments) > 0 {
+		segments = segments[:len(segments)-1]
+	}
+
+	base := parsed.Scheme + "://" + parsed.Host
+	candidates := []upstreamOwnerProfileCandidate{{
+		WebID: base + "/profile/card",
+		Root:  base + "/",
+	}}
+	for _, prefixSegments := range upstreamOwnerCandidatePrefixes(segments) {
+		root := base + "/" + strings.Join(prefixSegments, "/") + "/"
+		candidates = append(candidates, upstreamOwnerProfileCandidate{
+			WebID: root + "profile/card",
+			Root:  root,
+		})
+	}
+	return candidates
+}
+
+func upstreamOwnerCandidatePrefixes(segments []string) [][]string {
+	if len(segments) <= 1 {
+		if len(segments) == 1 && segments[0] != "" {
+			return [][]string{segments}
+		}
+		return nil
+	}
+	var prefixes [][]string
+	for length := 2; length <= len(segments); length++ {
+		prefixes = append(prefixes, segments[:length])
+	}
+	prefixes = append(prefixes, segments[:1])
+	return prefixes
+}
+
+func (s *Server) upstreamProfileCardExists(webID string) bool {
+	resp, err := s.requestHTTPSource(http.MethodHead, webID, "")
+	if err == nil {
+		if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+			return true
+		}
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			return false
+		}
+	}
+	resp, err = s.requestHTTPSource(http.MethodGet, webID, "")
+	return err == nil && resp.StatusCode >= 200 && resp.StatusCode <= 299
 }
 
 type sourceHTTPResponse struct {
@@ -2433,7 +2614,7 @@ func (s *Server) requestHTTPSource(method, rawURL, token string) (sourceHTTPResp
 	}, nil
 }
 
-func (s *Server) obtainUpstreamRPT(sourceURL, asURI, ticket string) (string, upstreamTokenResponse, error) {
+func (s *Server) obtainUpstreamRPT(serviceID, sourceURL, asURI, ticket string) (string, upstreamTokenResponse, error) {
 	if s.cfg.hasAccountCredentials() {
 		if s.accountTokenError != nil {
 			return "", upstreamTokenResponse{}, s.accountTokenError
@@ -2441,7 +2622,7 @@ func (s *Server) obtainUpstreamRPT(sourceURL, asURI, ticket string) (string, ups
 		if s.accountAccessToken == "" {
 			return "", upstreamTokenResponse{}, fmt.Errorf("account access token is not available")
 		}
-		derivationResourceID := s.cachedUpstreamDerivationResourceID(sourceURL, asURI)
+		derivationResourceID := s.cachedUpstreamDerivationResourceID(serviceID, sourceURL, asURI)
 		upstreamToken, err := s.cfg.requestUMAAccessToken(asURI, ticket, s.accountAccessToken, derivationResourceID)
 		if err != nil {
 			if requestErr := s.submitUpstreamAccessRequest(sourceURL, asURI, http.MethodGet); requestErr != nil {
@@ -2449,14 +2630,14 @@ func (s *Server) obtainUpstreamRPT(sourceURL, asURI, ticket string) (string, ups
 			}
 			return "", upstreamTokenResponse{}, fmt.Errorf("UMA token request failed for %s; access request submitted to %s", sourceURL, joinURL(asURI, "/requests"))
 		}
-		s.storeUpstreamToken(sourceURL, asURI, ticket, upstreamToken)
+		upstreamToken = s.storeUpstreamToken(serviceID, sourceURL, asURI, ticket, upstreamToken)
 		return s.recordUpstreamAccess(sourceURL, asURI, ticket, upstreamToken.AccessToken), upstreamToken, nil
 	}
 	upstreamToken := s.cfg.UpstreamRPT
 	if upstreamToken == "" {
 		return "", upstreamTokenResponse{}, fmt.Errorf("upstream UMA authorization failed for %s", sourceURL)
 	}
-	s.storeUpstreamToken(sourceURL, asURI, ticket, upstreamTokenResponse{AccessToken: upstreamToken})
+	s.storeUpstreamToken(serviceID, sourceURL, asURI, ticket, upstreamTokenResponse{AccessToken: upstreamToken})
 	return s.recordUpstreamAccess(sourceURL, asURI, ticket, upstreamToken), upstreamTokenResponse{}, nil
 }
 

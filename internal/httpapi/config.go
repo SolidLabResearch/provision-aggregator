@@ -80,7 +80,7 @@ func DefaultConfig(baseURL string) Config {
 		MediaProfileQuery: `SELECT * WHERE {
   ?s ?p ?o .
 }`,
-		UpstreamDerivationResourceName: "Aggregator Media Profile",
+		UpstreamDerivationResourceName: "Aggregated Media Profile",
 		MinimumAccessibleSources:       2,
 		MinimumAccessibleSourceRatio:   0.7,
 		OutputReadScope:                "read",
@@ -205,7 +205,7 @@ func (c Config) mediaProfileQuery() string {
 }
 
 func (c Config) upstreamDerivationResourceName() string {
-	return defaultString(c.UpstreamDerivationResourceName, "Aggregator Media Profile")
+	return defaultString(c.UpstreamDerivationResourceName, "Aggregated Media Profile")
 }
 
 func (c Config) minimumAccessibleSources() int {

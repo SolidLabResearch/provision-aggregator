@@ -384,8 +384,8 @@ func TestEndpointsRespectAcceptHeader(t *testing.T) {
 
 	// Every JSON / JSON-LD read endpoint should negotiate identically.
 	endpoints := []string{
-		"/",            // server description (application/json)
-		"/transformations", // transformation catalog (application/ld+json)
+		"/",                                     // server description (application/json)
+		"/transformations",                      // transformation catalog (application/ld+json)
 		mustPath(agg.ID),                        // aggregator description
 		mustPath(agg.ServiceCollectionEndpoint), // service collection
 		mustPath(svc.ID),                        // service description
@@ -720,7 +720,7 @@ func TestMilestone10OutputPermissionTicketComesFromAuthorizationServer(t *testin
 				t.Fatalf("decode UAS derivation resource: %v", err)
 			}
 			scopes, _ := body["resource_scopes"].([]any)
-			if body["name"] != "Aggregator Media Profile" ||
+			if body["name"] != "Aggregated Media Profile from "+sourceURL ||
 				len(scopes) != 1 || scopes[0] != "urn:knows:uma:scopes:read" {
 				t.Fatalf("UAS derivation resource body = %#v", body)
 			}
