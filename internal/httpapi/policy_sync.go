@@ -39,6 +39,7 @@ type resourceOwnerAssetsResponse struct {
 type resourceOwnerAsset struct {
 	ID          string `json:"_id"`
 	Description struct {
+		Name           string   `json:"name"`
 		ResourceScopes []string `json:"resource_scopes"`
 	} `json:"description"`
 	Scopes []string `json:"scopes"`
@@ -90,7 +91,7 @@ func (s *Server) syncConfiguredAuthorizationPolicies() error {
 		if asset.ID == "" {
 			continue
 		}
-		aggSubject := s.policySyncAggregatorSubject(asset.ID, owner)
+		aggSubject := s.policySyncAggregatorSubject(asset, owner)
 		for _, rule := range s.desiredODRLRules(asset, owner, aggSubject) {
 			if odrlRuleExists(policies, rule) {
 				continue
@@ -124,14 +125,31 @@ func (s *Server) syncConfiguredAuthorizationPolicies() error {
 	return nil
 }
 
-func (s *Server) policySyncAggregatorSubject(resourceID, fallback string) string {
-	if subject := s.knownAggregatorSubjectForResource(resourceID); subject != "" {
-		return subject
+func (s *Server) policySyncAggregatorSubject(asset resourceOwnerAsset, fallback string) string {
+	for _, resourceID := range []string{
+		asset.Description.Name,
+		s.resourceURLForAuthorizationResourceID(asset.ID),
+		asset.ID,
+	} {
+		if subject := s.knownAggregatorSubjectForResource(resourceID); subject != "" {
+			return subject
+		}
 	}
 	if s.cfg.Subject != "" {
 		return s.cfg.Subject
 	}
 	return fallback
+}
+
+func (s *Server) resourceURLForAuthorizationResourceID(authorizationResourceID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for resourceURL, registeredAuthorizationResourceID := range s.authorizationResourceIDs {
+		if registeredAuthorizationResourceID == authorizationResourceID {
+			return resourceURL
+		}
+	}
+	return ""
 }
 
 func (s *Server) knownAggregatorSubjectForResource(resourceID string) string {

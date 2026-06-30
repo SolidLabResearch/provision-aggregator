@@ -473,6 +473,124 @@ func TestStartupSynchronizesAuthorizationPoliciesForManagedAssets(t *testing.T) 
 	}
 }
 
+func TestPolicySyncUsesAssetDescriptionNameToResolveAggregatorSubject(t *testing.T) {
+	cfg := DefaultConfig("https://aggregator.example")
+	cfg.AccountServerURL = "https://css.example"
+	cfg.AccountEmail = "alice@example.com"
+	cfg.AccountPassword = "password"
+	cfg.AccountWebID = "https://pod.example/alice#me"
+	cfg.Subject = "https://aggregator.example/profile/card#me"
+	cfg.AuthorizationServerURL = "https://as.example/uma"
+	cfg.AuthorizationServerTokenEndpoint = "https://as.example/uma/token"
+	cfg.AuthorizationServerPermissionEndpoint = "https://as.example/uma/permission"
+	cfg.AuthorizationServerIntrospectionEndpoint = "https://as.example/uma/introspect"
+	cfg.AuthorizationServerResourceRegistrationEndpoint = "https://as.example/uma/resources"
+	cfg.AuthorizationServerRegistrationEndpoint = "https://as.example/uma/register"
+
+	const aggregatorOwner = "https://pod.example/bob#me"
+	registeredResources := map[string]string{}
+	var agreementPolicies int
+	cfg.AccountHTTPClient = &http.Client{Transport: testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case "https://css.example/.account/":
+			if req.Header.Get("Authorization") == "" {
+				return testJSONResponse(req, map[string]any{
+					"controls": map[string]any{
+						"password": map[string]string{"login": "https://css.example/.account/login"},
+					},
+				}), nil
+			}
+			return testJSONResponse(req, map[string]any{
+				"controls": map[string]any{
+					"account": map[string]string{"clientCredentials": "https://css.example/.account/client-credentials"},
+				},
+			}), nil
+		case "https://css.example/.account/login":
+			return testJSONResponse(req, map[string]string{"authorization": "account-authorization"}), nil
+		case "https://css.example/.account/client-credentials":
+			return testJSONResponse(req, map[string]string{"id": "css-client", "secret": "css-secret"}), nil
+		case "https://css.example/.well-known/openid-configuration":
+			return testJSONResponse(req, map[string]string{"token_endpoint": "https://css.example/token"}), nil
+		case "https://css.example/token":
+			return testJSONResponse(req, map[string]any{"access_token": "account-token"}), nil
+		case "https://as.example/uma/register":
+			return testStatusJSONResponse(req, http.StatusCreated, map[string]string{"client_id": "rs-client", "client_secret": "rs-secret"}), nil
+		case "https://as.example/uma/token":
+			return testStatusJSONResponse(req, http.StatusCreated, map[string]any{"access_token": "pat-token", "token_type": "Bearer", "expires_in": 3600}), nil
+		case "https://as.example/uma/resources":
+			var body resourceDescriptionDocument
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode resource registration: %v", err)
+			}
+			resourceID := "urn:uuid:test-" + url.PathEscape(body.Name)
+			registeredResources[body.Name] = resourceID
+			return testStatusJSONResponse(req, http.StatusCreated, map[string]string{"_id": resourceID}), nil
+		case "https://as.example/uma/resource-owner/assets?include=description,scopes,policy_uri,policies":
+			assets := make([]map[string]any, 0, len(registeredResources))
+			for resourceURL, authorizationResourceID := range registeredResources {
+				assets = append(assets, map[string]any{
+					"_id": authorizationResourceID,
+					"description": map[string]any{
+						"name":            resourceURL,
+						"resource_scopes": []string{scopeRead, scopeCreate, scopeDelete},
+					},
+				})
+			}
+			return testJSONResponse(req, map[string]any{"assets": assets}), nil
+		case "https://as.example/uma/policies":
+			if req.Method == http.MethodGet {
+				return testTurtleResponse(req, ""), nil
+			}
+			if req.Method == http.MethodPost {
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				text := string(body)
+				if strings.Contains(text, " a <http://www.w3.org/ns/odrl/2/Agreement> ") {
+					agreementPolicies++
+					if !strings.Contains(text, "odrl:assignee <"+aggregatorOwner+">") {
+						t.Fatalf("agreement policy did not use aggregator owner as assignee:\n%s", text)
+					}
+					if strings.Contains(text, "odrl:assignee <"+cfg.Subject+">") {
+						t.Fatalf("agreement policy used configured fallback subject as assignee:\n%s", text)
+					}
+				}
+				return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+			}
+		default:
+			if strings.HasPrefix(req.URL.String(), "https://as.example/uma/policies/") && req.Method == http.MethodPatch {
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				text := string(body)
+				if strings.Contains(text, " a odrl:Permission ;") {
+					agreementPolicies++
+					if !strings.Contains(text, "odrl:assignee <"+aggregatorOwner+">") {
+						t.Fatalf("agreement patch did not use aggregator owner as assignee:\n%s", text)
+					}
+					if strings.Contains(text, "odrl:assignee <"+cfg.Subject+">") {
+						t.Fatalf("agreement patch used configured fallback subject as assignee:\n%s", text)
+					}
+				}
+				return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+			}
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.String())
+		}
+		return nil, nil
+	})}
+
+	server := NewServer(cfg)
+	ownerToken := "header.eyJ3ZWJpZCI6Imh0dHBzOi8vcG9kLmV4YW1wbGUvYm9iI21lIn0.signature"
+	if _, err := server.createAggregator(ownerToken); err != nil {
+		t.Fatalf("create aggregator: %v", err)
+	}
+	if agreementPolicies == 0 {
+		t.Fatalf("no agreement policies were created")
+	}
+}
+
 type testRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn testRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
