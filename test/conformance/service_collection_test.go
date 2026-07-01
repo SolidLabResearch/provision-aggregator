@@ -1182,36 +1182,27 @@ func TestMilestone7FailedLiveUpstreamTokenRequestSubmitsAccessRequest(t *testing
 			return jsonResponse(req, map[string]string{"token_endpoint": "https://uas.example/uma/token"}), nil
 		case "https://uas.example/uma/token":
 			tokenRequests++
-			return response(req, http.StatusForbidden, "application/json", "", []byte(`{"error":"request_denied"}`)), nil
+			return response(req, http.StatusForbidden, "application/json", "", []byte(`{"error":"need_info","ticket":"need-info-ticket","required_claims":{"claim_token_format":[[]]}}`)), nil
 		case "https://uas.example/uma/requests":
 			if req.Method != http.MethodPost {
 				t.Fatalf("access request method = %s, want POST", req.Method)
 			}
-			wantAuthorization := "WebID " + url.QueryEscape(ownerWebID)
+			wantAuthorization := "Bearer account-token"
 			if req.Header.Get("Authorization") != wantAuthorization {
 				t.Fatalf("access request authorization = %q, want %q", req.Header.Get("Authorization"), wantAuthorization)
 			}
-			if req.Header.Get("Content-Type") != "text/turtle" {
+			if req.Header.Get("Content-Type") != "application/json" {
 				t.Fatalf("access request content-type = %q", req.Header.Get("Content-Type"))
 			}
-			body, err := io.ReadAll(req.Body)
-			if err != nil {
-				t.Fatal(err)
+			var body map[string]string
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode access request body: %v", err)
 			}
-			text := string(body)
-			for _, want := range []string{
-				"a sotw:EvaluationRequest",
-				"sotw:requestedTarget <" + sourceURL + ">",
-				"sotw:requestedAction odrl:read",
-				"sotw:requestingParty <" + ownerWebID + ">",
-				"ex:requestStatus ex:requested",
-			} {
-				if !strings.Contains(text, want) {
-					t.Fatalf("access request body missing %q:\n%s", want, text)
-				}
+			if body["ticket"] != "need-info-ticket" || len(body) != 1 {
+				t.Fatalf("access request body = %#v, want ticket only", body)
 			}
 			accessRequestSubmitted = true
-			return response(req, http.StatusCreated, "text/plain", "", nil), nil
+			return response(req, http.StatusAccepted, "text/plain", "", nil), nil
 		default:
 			t.Fatalf("unexpected request %s %s", req.Method, req.URL.String())
 			return nil, nil
@@ -1225,14 +1216,14 @@ func TestMilestone7FailedLiveUpstreamTokenRequestSubmitsAccessRequest(t *testing
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("failed upstream authorization status = %d, want 201; body: %s", rec.Code, rec.Body.String())
 	}
-	if tokenRequests != 2 {
-		t.Fatalf("token requests = %d, want JSON and form attempts", tokenRequests)
+	if tokenRequests != 1 {
+		t.Fatalf("token requests = %d, want JSON need_info response only", tokenRequests)
 	}
 	if !accessRequestSubmitted {
 		t.Fatalf("access request was not submitted")
 	}
 	requests := server.UpstreamAccessRequests()
-	if len(requests) != 1 || requests[0].AuthorizationServer != "https://uas.example/uma" || requests[0].Action != "odrl:read" || requests[0].RequestURL != "https://uas.example/uma/requests" {
+	if len(requests) != 1 || requests[0].AuthorizationServer != "https://uas.example/uma" || requests[0].Ticket != "need-info-ticket" || requests[0].Action != "odrl:read" || requests[0].RequestURL != "https://uas.example/uma/requests" {
 		t.Fatalf("access request evidence = %#v", requests)
 	}
 	var desc httpapi.ServiceDescription

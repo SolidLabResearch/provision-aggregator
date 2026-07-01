@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -159,10 +158,19 @@ type UpstreamAccessEvidence struct {
 type UpstreamAccessRequestEvidence struct {
 	ResourceURL         string `json:"resource_url"`
 	AuthorizationServer string `json:"authorization_server"`
+	Ticket              string `json:"ticket"`
 	RequestingParty     string `json:"requesting_party"`
 	Action              string `json:"action"`
 	RequestURL          string `json:"request_url"`
 }
+
+type upstreamAccessRequestPolicy int
+
+const (
+	upstreamAccessRequestAlways upstreamAccessRequestPolicy = iota
+	upstreamAccessRequestIfMissing
+	upstreamAccessRequestNever
+)
 
 type ResourceRegistrationEvidence struct {
 	ResourceURL         string   `json:"resource_url"`
@@ -1116,7 +1124,7 @@ func (s *Server) startSourceAvailabilityPolling(aggID, serviceID string, req cre
 			if len(pendingSources) > 0 && !s.anyUpstreamSourceAccessible(pendingSources) {
 				continue
 			}
-			output, err := s.materialize(serviceID, reqCopy, queryType)
+			output, err := s.materializeWithMissingAccessRequests(serviceID, reqCopy, queryType)
 			if err != nil {
 				if isInsufficientUpstreamResources(err) {
 					// Some resources are still inaccessible; narrow the polling
@@ -1181,7 +1189,7 @@ func (s *Server) upstreamSourceAccessible(rawURL string) bool {
 			return true
 		}
 	}
-	upstreamToken, _, err := s.obtainUpstreamRPT("", rawURL, asURI, ticket)
+	upstreamToken, _, err := s.obtainUpstreamRPTWithoutAccessRequest("", rawURL, asURI, ticket)
 	if err != nil {
 		return false
 	}
@@ -1923,6 +1931,14 @@ func (e inaccessibleSourceError) Unwrap() error {
 }
 
 func (s *Server) materialize(serviceID string, req createServiceRequest, queryType string) (materializedOutput, error) {
+	return s.materializeWithAccessRequestPolicy(serviceID, req, queryType, upstreamAccessRequestAlways)
+}
+
+func (s *Server) materializeWithMissingAccessRequests(serviceID string, req createServiceRequest, queryType string) (materializedOutput, error) {
+	return s.materializeWithAccessRequestPolicy(serviceID, req, queryType, upstreamAccessRequestIfMissing)
+}
+
+func (s *Server) materializeWithAccessRequestPolicy(serviceID string, req createServiceRequest, queryType string, accessRequestPolicy upstreamAccessRequestPolicy) (materializedOutput, error) {
 	workspace := filepath.Join(s.cfg.OxigraphWorkdir, serviceID)
 	storeDir := filepath.Join(workspace, "store")
 	stagingDir := filepath.Join(workspace, "sources")
@@ -1949,7 +1965,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 	var indexSourceURLs []string
 	accessibleIndexSources := 0
 	for i, sourceURL := range req.SourceURLs {
-		source, err := s.stageSource(serviceID, stagingDir, i, sourceURL)
+		source, err := s.stageSource(serviceID, stagingDir, i, sourceURL, accessRequestPolicy)
 		if err != nil {
 			logWarnf("httpapi: failed to stage index source %s: %v", sourceURL, err)
 			lastSourceErr = err
@@ -2001,7 +2017,7 @@ func (s *Server) materialize(serviceID string, req createServiceRequest, queryTy
 		}
 
 		for i, sourceURL := range profileURLs {
-			source, err := s.stageSource(serviceID, stagingDir, len(req.SourceURLs)+i, sourceURL)
+			source, err := s.stageSource(serviceID, stagingDir, len(req.SourceURLs)+i, sourceURL, accessRequestPolicy)
 			if err != nil {
 				logWarnf("httpapi: failed to stage media profile source %s: %v", sourceURL, err)
 				lastSourceErr = err
@@ -2195,14 +2211,14 @@ func appendUniqueUpstreamDerivation(derivations []upstreamDerivationEvidence, de
 	return append(derivations, derivation)
 }
 
-func (s *Server) stageSource(serviceID, stagingDir string, index int, rawURL string) (stagedSource, error) {
+func (s *Server) stageSource(serviceID, stagingDir string, index int, rawURL string, accessRequestPolicy upstreamAccessRequestPolicy) (stagedSource, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return stagedSource{}, err
 	}
 	switch parsed.Scheme {
 	case "http", "https":
-		fetched, err := s.fetchHTTPSource(serviceID, rawURL)
+		fetched, err := s.fetchHTTPSource(serviceID, rawURL, accessRequestPolicy)
 		if err != nil {
 			return stagedSource{}, err
 		}
@@ -2235,7 +2251,7 @@ func (s *Server) stageSource(serviceID, stagingDir string, index int, rawURL str
 	}
 }
 
-func (s *Server) fetchHTTPSource(serviceID, rawURL string) (sourceHTTPResult, error) {
+func (s *Server) fetchHTTPSource(serviceID, rawURL string, accessRequestPolicy upstreamAccessRequestPolicy) (sourceHTTPResult, error) {
 	resp, err := s.requestHTTPSource(http.MethodGet, rawURL, "")
 	if err != nil {
 		return sourceHTTPResult{}, err
@@ -2274,7 +2290,7 @@ func (s *Server) fetchHTTPSource(serviceID, rawURL string) (sourceHTTPResult, er
 			logDebugf("httpapi: cached upstream token for %s is not reused for derivation evidence in service %s; no service-scoped derivation resource for owner", rawURL, serviceID)
 		}
 	}
-	upstreamToken, upstreamResponse, err = s.obtainUpstreamRPT(serviceID, rawURL, asURI, ticket)
+	upstreamToken, upstreamResponse, err = s.obtainUpstreamRPTWithAccessRequestPolicy(serviceID, rawURL, asURI, ticket, accessRequestPolicy)
 	if err != nil {
 		return sourceHTTPResult{}, inaccessibleSourceError{err: err}
 	}
@@ -2615,6 +2631,14 @@ func (s *Server) requestHTTPSource(method, rawURL, token string) (sourceHTTPResp
 }
 
 func (s *Server) obtainUpstreamRPT(serviceID, sourceURL, asURI, ticket string) (string, upstreamTokenResponse, error) {
+	return s.obtainUpstreamRPTWithAccessRequestPolicy(serviceID, sourceURL, asURI, ticket, upstreamAccessRequestAlways)
+}
+
+func (s *Server) obtainUpstreamRPTWithoutAccessRequest(serviceID, sourceURL, asURI, ticket string) (string, upstreamTokenResponse, error) {
+	return s.obtainUpstreamRPTWithAccessRequestPolicy(serviceID, sourceURL, asURI, ticket, upstreamAccessRequestNever)
+}
+
+func (s *Server) obtainUpstreamRPTWithAccessRequestPolicy(serviceID, sourceURL, asURI, ticket string, accessRequestPolicy upstreamAccessRequestPolicy) (string, upstreamTokenResponse, error) {
 	if s.cfg.hasAccountCredentials() {
 		if s.accountTokenError != nil {
 			return "", upstreamTokenResponse{}, s.accountTokenError
@@ -2623,9 +2647,17 @@ func (s *Server) obtainUpstreamRPT(serviceID, sourceURL, asURI, ticket string) (
 			return "", upstreamTokenResponse{}, fmt.Errorf("account access token is not available")
 		}
 		derivationResourceID := s.cachedUpstreamDerivationResourceID(serviceID, sourceURL, asURI)
-		upstreamToken, err := s.cfg.requestUMAAccessToken(asURI, ticket, s.accountAccessToken, derivationResourceID)
+		upstreamToken, nextTicket, err := s.cfg.requestUMAAccessToken(asURI, ticket, s.accountAccessToken, derivationResourceID)
 		if err != nil {
-			if requestErr := s.submitUpstreamAccessRequest(sourceURL, asURI, http.MethodGet); requestErr != nil {
+			if accessRequestPolicy == upstreamAccessRequestNever ||
+				(accessRequestPolicy == upstreamAccessRequestIfMissing && s.upstreamAccessRequestSubmitted(sourceURL, asURI)) {
+				return "", upstreamTokenResponse{}, err
+			}
+			accessRequestTicket := ticket
+			if nextTicket != nil {
+				accessRequestTicket = *nextTicket
+			}
+			if requestErr := s.submitUpstreamAccessRequest(sourceURL, asURI, accessRequestTicket, http.MethodGet, s.accountAccessToken); requestErr != nil {
 				return "", upstreamTokenResponse{}, fmt.Errorf("UMA token request failed (%v) and access request failed (%v)", err, requestErr)
 			}
 			return "", upstreamTokenResponse{}, fmt.Errorf("UMA token request failed for %s; access request submitted to %s", sourceURL, joinURL(asURI, "/requests"))
@@ -2641,52 +2673,50 @@ func (s *Server) obtainUpstreamRPT(serviceID, sourceURL, asURI, ticket string) (
 	return s.recordUpstreamAccess(sourceURL, asURI, ticket, upstreamToken), upstreamTokenResponse{}, nil
 }
 
-func (s *Server) submitUpstreamAccessRequest(resourceURL, asURI, method string) error {
+func (s *Server) submitUpstreamAccessRequest(resourceURL, asURI, ticket, method, requestingPartyToken string) error {
 	requestingParty := s.cfg.provisionSubject()
 	if requestingParty == "" {
 		logWarnf("httpapi: cannot submit upstream access request for %s: missing requesting party WebID", resourceURL)
 		return fmt.Errorf("requesting party WebID is not configured")
 	}
+	if requestingPartyToken == "" {
+		logWarnf("httpapi: cannot submit upstream access request for %s: missing requesting party token", resourceURL)
+		return fmt.Errorf("requesting party token is not available")
+	}
+	if ticket == "" {
+		logWarnf("httpapi: cannot submit upstream access request for %s: missing UMA ticket", resourceURL)
+		return fmt.Errorf("UMA ticket is not available")
+	}
 	action := odrlActionLocalForHTTPMethod(method)
 	requestURL := joinURL(asURI, "/requests")
-	body := accessRequestTurtle(asURI, resourceURL, requestingParty, action)
-	logDebugf("httpapi: submitting upstream access request to %s for %s (action=%s requestingParty=%s)", requestURL, resourceURL, action, requestingParty)
+	body, err := json.Marshal(struct {
+		Ticket string `json:"ticket"`
+	}{Ticket: ticket})
+	if err != nil {
+		return err
+	}
+	logDebugf("httpapi: submitting upstream access request to %s for %s (ticket=%s action=%s requestingParty=%s)", requestURL, resourceURL, ticket, action, requestingParty)
 
-	req, err := http.NewRequest(http.MethodPost, requestURL, strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, requestURL, bytes.NewReader(body))
 	if err != nil {
 		logWarnf("httpapi: failed to build upstream access request for %s: %v", resourceURL, err)
 		return err
 	}
-	req.Header.Set("Authorization", "WebID "+url.QueryEscape(requestingParty))
-	req.Header.Set("Content-Type", "text/turtle")
+	req.Header.Set("Authorization", "Bearer "+requestingPartyToken)
+	req.Header.Set("Content-Type", "application/json")
 
 	status, responseBody, err := s.doAuthorizationServer(req)
 	if err != nil {
 		logWarnf("httpapi: upstream access request failed for %s: %v", resourceURL, err)
 		return err
 	}
-	if status < 200 || status > 299 {
+	if status != http.StatusAccepted {
 		logWarnf("httpapi: upstream access request for %s returned %d", resourceURL, status)
 		return fmt.Errorf("%s %s returned %d: %s", req.Method, req.URL.String(), status, strings.TrimSpace(string(responseBody)))
 	}
 	logDebugf("httpapi: upstream access request recorded for %s", resourceURL)
-	s.recordUpstreamAccessRequest(resourceURL, asURI, requestingParty, "odrl:"+action, requestURL)
+	s.recordUpstreamAccessRequest(resourceURL, asURI, ticket, requestingParty, "odrl:"+action, requestURL)
 	return nil
-}
-
-func accessRequestTurtle(asURI, resourceURL, requestingParty, action string) string {
-	sum := sha256.Sum256([]byte(resourceURL + "\x00" + requestingParty + "\x00" + action))
-	requestID := joinURL(asURI, "/access-requests/"+hex.EncodeToString(sum[:8]))
-	return fmt.Sprintf(`@prefix sotw: <https://w3id.org/force/sotw#> .
-@prefix odrl: <http://www.w3.org/ns/odrl/2/> .
-@prefix ex: <http://example.org/> .
-
-<%s> a sotw:EvaluationRequest ;
-  sotw:requestedTarget <%s> ;
-  sotw:requestedAction odrl:%s ;
-  sotw:requestingParty <%s> ;
-  ex:requestStatus ex:requested .
-`, requestID, resourceURL, action, requestingParty)
 }
 
 func odrlActionLocalForHTTPMethod(method string) string {
@@ -2713,10 +2743,11 @@ func (s *Server) recordUpstreamAccess(sourceURL, asURI, ticket, upstreamToken st
 	return upstreamToken
 }
 
-func (s *Server) recordUpstreamAccessRequest(resourceURL, asURI, requestingParty, action, requestURL string) {
+func (s *Server) recordUpstreamAccessRequest(resourceURL, asURI, ticket, requestingParty, action, requestURL string) {
 	request := UpstreamAccessRequestEvidence{
 		ResourceURL:         resourceURL,
 		AuthorizationServer: asURI,
+		Ticket:              ticket,
 		RequestingParty:     requestingParty,
 		Action:              action,
 		RequestURL:          requestURL,
@@ -2724,6 +2755,18 @@ func (s *Server) recordUpstreamAccessRequest(resourceURL, asURI, requestingParty
 	s.mu.Lock()
 	s.upstreamAccessRequests = append(s.upstreamAccessRequests, request)
 	s.mu.Unlock()
+}
+
+func (s *Server) upstreamAccessRequestSubmitted(resourceURL, asURI string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, request := range s.upstreamAccessRequests {
+		if request.ResourceURL == resourceURL && request.AuthorizationServer == asURI {
+			return true
+		}
+	}
+	return false
 }
 
 func stageLocalSource(path, rawURL string) (stagedSource, error) {

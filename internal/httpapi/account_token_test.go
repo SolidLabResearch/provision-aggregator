@@ -38,12 +38,52 @@ func TestUMAAccessTokenRequestIncludesDerivationResourceID(t *testing.T) {
 		}
 	})}
 
-	token, err := cfg.requestUMAAccessToken("https://uas.example/uma", "ticket", "claim-token", "derivation-resource-previous")
+	token, nextTicket, err := cfg.requestUMAAccessToken("https://uas.example/uma", "ticket", "claim-token", "derivation-resource-previous")
 	if err != nil {
 		t.Fatalf("requestUMAAccessToken: %v", err)
 	}
+	if nextTicket != nil {
+		t.Fatalf("next ticket = %q, want nil when token is issued", *nextTicket)
+	}
 	if token.AccessToken != "new-upstream-token" {
 		t.Fatalf("access token = %q, want new-upstream-token", token.AccessToken)
+	}
+}
+
+func TestUMAAccessTokenNeedInfoReturnsTicket(t *testing.T) {
+	cfg := DefaultConfig("https://aggregator.example")
+	tokenRequests := 0
+	cfg.AccountHTTPClient = &http.Client{Transport: accountTokenRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case "https://uas.example/uma/.well-known/uma2-configuration":
+			return accountTokenJSONResponse(req, http.StatusOK, map[string]string{"token_endpoint": "https://uas.example/uma/token"}), nil
+		case "https://uas.example/uma/token":
+			tokenRequests++
+			return accountTokenJSONResponse(req, http.StatusForbidden, map[string]any{
+				"error":  "need_info",
+				"ticket": "need-info-ticket",
+				"required_claims": map[string]any{
+					"claim_token_format": [][]string{{}},
+				},
+			}), nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	})}
+
+	_, nextTicket, err := cfg.requestUMAAccessToken("https://uas.example/uma", "resource-server-ticket", "claim-token", "")
+	if err == nil {
+		t.Fatalf("requestUMAAccessToken error = nil, want need_info failure")
+	}
+	if nextTicket == nil {
+		t.Fatalf("next ticket = nil, want AS-issued ticket")
+	}
+	if *nextTicket != "need-info-ticket" {
+		t.Fatalf("next ticket = %q, want AS-issued ticket", *nextTicket)
+	}
+	if tokenRequests != 1 {
+		t.Fatalf("token requests = %d, want no form retry after need_info", tokenRequests)
 	}
 }
 

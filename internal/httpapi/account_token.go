@@ -231,23 +231,29 @@ func (c Config) exchangeClientCredentials(tokenEndpoint string, credentials clie
 	return response.AccessToken, nil
 }
 
-func (c Config) requestUMAAccessToken(asURI, ticket, claimToken, derivationResourceID string) (upstreamTokenResponse, error) {
+func (c Config) requestUMAAccessToken(asURI, ticket, claimToken, derivationResourceID string) (upstreamTokenResponse, *string, error) {
 	tokenEndpoint, err := c.discoverAuthorizationServerTokenEndpoint(asURI)
 	if err != nil {
-		return upstreamTokenResponse{}, err
+		return upstreamTokenResponse{}, nil, err
 	}
-	token, jsonErr := c.requestUMAAccessTokenJSON(tokenEndpoint, ticket, claimToken, derivationResourceID)
+	token, nextTicket, jsonErr := c.requestUMAAccessTokenJSON(tokenEndpoint, ticket, claimToken, derivationResourceID)
 	if jsonErr == nil {
-		return token, nil
+		return token, nil, nil
 	}
-	token, formErr := c.requestUMAAccessTokenForm(tokenEndpoint, ticket, claimToken, derivationResourceID)
+	if nextTicket != nil {
+		return upstreamTokenResponse{}, nextTicket, jsonErr
+	}
+	token, nextTicket, formErr := c.requestUMAAccessTokenForm(tokenEndpoint, ticket, claimToken, derivationResourceID)
 	if formErr == nil {
-		return token, nil
+		return token, nil, nil
 	}
-	return upstreamTokenResponse{}, fmt.Errorf("UMA token request failed using JSON (%v) and form encoding (%v)", jsonErr, formErr)
+	if nextTicket != nil {
+		return upstreamTokenResponse{}, nextTicket, formErr
+	}
+	return upstreamTokenResponse{}, nil, fmt.Errorf("UMA token request failed using JSON (%v) and form encoding (%v)", jsonErr, formErr)
 }
 
-func (c Config) requestUMAAccessTokenJSON(tokenEndpoint, ticket, claimToken, derivationResourceID string) (upstreamTokenResponse, error) {
+func (c Config) requestUMAAccessTokenJSON(tokenEndpoint, ticket, claimToken, derivationResourceID string) (upstreamTokenResponse, *string, error) {
 	body, err := json.Marshal(umaTokenRequest{
 		GrantType:            "urn:ietf:params:oauth:grant-type:uma-ticket",
 		Ticket:               ticket,
@@ -257,28 +263,34 @@ func (c Config) requestUMAAccessTokenJSON(tokenEndpoint, ticket, claimToken, der
 		DerivationResourceID: derivationResourceID,
 	})
 	if err != nil {
-		return upstreamTokenResponse{}, err
+		return upstreamTokenResponse{}, nil, err
 	}
 	req, err := http.NewRequest(http.MethodPost, tokenEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return upstreamTokenResponse{}, err
+		return upstreamTokenResponse{}, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	responseBody, err := c.doBody(req, http.StatusOK)
+	status, responseBody, err := c.doBodyWithStatus(req)
 	if err != nil {
-		return upstreamTokenResponse{}, err
+		return upstreamTokenResponse{}, nil, err
+	}
+	if status != http.StatusOK {
+		if ticket := needInfoTicket(responseBody); ticket != "" {
+			return upstreamTokenResponse{}, &ticket, unexpectedStatusError(req, status, responseBody)
+		}
+		return upstreamTokenResponse{}, nil, unexpectedStatusError(req, status, responseBody)
 	}
 	var response upstreamTokenResponse
 	if err := json.Unmarshal(responseBody, &response); err != nil {
-		return upstreamTokenResponse{}, fmt.Errorf("decode %s response: %w", req.URL.String(), err)
+		return upstreamTokenResponse{}, nil, fmt.Errorf("decode %s response: %w", req.URL.String(), err)
 	}
 	if response.AccessToken == "" {
-		return upstreamTokenResponse{}, fmt.Errorf("UMA token response did not include access_token")
+		return upstreamTokenResponse{}, nil, fmt.Errorf("UMA token response did not include access_token")
 	}
-	return response, nil
+	return response, nil, nil
 }
 
-func (c Config) requestUMAAccessTokenForm(tokenEndpoint, ticket, claimToken, derivationResourceID string) (upstreamTokenResponse, error) {
+func (c Config) requestUMAAccessTokenForm(tokenEndpoint, ticket, claimToken, derivationResourceID string) (upstreamTokenResponse, *string, error) {
 	form := url.Values{}
 	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:uma-ticket")
 	form.Set("ticket", ticket)
@@ -292,21 +304,41 @@ func (c Config) requestUMAAccessTokenForm(tokenEndpoint, ticket, claimToken, der
 	}
 	req, err := http.NewRequest(http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return upstreamTokenResponse{}, err
+		return upstreamTokenResponse{}, nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	responseBody, err := c.doBody(req, http.StatusOK)
+	status, responseBody, err := c.doBodyWithStatus(req)
 	if err != nil {
-		return upstreamTokenResponse{}, err
+		return upstreamTokenResponse{}, nil, err
+	}
+	if status != http.StatusOK {
+		if ticket := needInfoTicket(responseBody); ticket != "" {
+			return upstreamTokenResponse{}, &ticket, unexpectedStatusError(req, status, responseBody)
+		}
+		return upstreamTokenResponse{}, nil, unexpectedStatusError(req, status, responseBody)
 	}
 	var response upstreamTokenResponse
 	if err := json.Unmarshal(responseBody, &response); err != nil {
-		return upstreamTokenResponse{}, fmt.Errorf("decode %s response: %w", req.URL.String(), err)
+		return upstreamTokenResponse{}, nil, fmt.Errorf("decode %s response: %w", req.URL.String(), err)
 	}
 	if response.AccessToken == "" {
-		return upstreamTokenResponse{}, fmt.Errorf("UMA token response did not include access_token")
+		return upstreamTokenResponse{}, nil, fmt.Errorf("UMA token response did not include access_token")
 	}
-	return response, nil
+	return response, nil, nil
+}
+
+func needInfoTicket(body []byte) string {
+	var response struct {
+		Error  string `json:"error"`
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return ""
+	}
+	if response.Error != "need_info" || response.Ticket == "" {
+		return ""
+	}
+	return response.Ticket
 }
 
 func (c Config) discoverAuthorizationServerTokenEndpoint(asURI string) (string, error) {
@@ -365,23 +397,35 @@ func (c Config) doJSON(req *http.Request, wantStatus int, target any) error {
 }
 
 func (c Config) doBody(req *http.Request, wantStatus int) ([]byte, error) {
+	status, body, err := c.doBodyWithStatus(req)
+	if err != nil {
+		return nil, err
+	}
+	if status != wantStatus {
+		return nil, unexpectedStatusError(req, status, body)
+	}
+	return body, nil
+}
+
+func (c Config) doBodyWithStatus(req *http.Request) (int, []byte, error) {
 	client := c.AccountHTTPClient
 	if client == nil {
 		client = http.DefaultClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
-	if resp.StatusCode != wantStatus {
-		return nil, fmt.Errorf("%s %s returned %d: %s", req.Method, req.URL.String(), resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return body, nil
+	return resp.StatusCode, body, nil
+}
+
+func unexpectedStatusError(req *http.Request, status int, body []byte) error {
+	return fmt.Errorf("%s %s returned %d: %s", req.Method, req.URL.String(), status, strings.TrimSpace(string(body)))
 }
 
 func joinURL(baseURL, path string) string {
